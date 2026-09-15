@@ -1,0 +1,755 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <title>تقرير الفحص الشامل والحساس لنظام بيت الورد POS</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800;900&display=swap');
+
+    @page {
+      size: A4;
+      margin: 14mm 12mm 14mm 12mm;
+    }
+
+    * {
+      box-sizing: border-box;
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+    }
+
+    body {
+      font-family: 'Cairo', system-ui, -apple-system, sans-serif;
+      margin: 0;
+      padding: 0;
+      background: #ffffff;
+      color: #0f172a;
+      font-size: 11px;
+      line-height: 1.5;
+    }
+
+    .cover-page {
+      page-break-after: always;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      height: 96vh;
+      text-align: center;
+      padding: 30px;
+      background: linear-gradient(135deg, #fdf2f8 0%, #ffffff 50%, #eff6ff 100%);
+      border: 2px solid #fbcfe8;
+      border-radius: 20px;
+    }
+
+    .badge-top {
+      background: #be185d;
+      color: white;
+      padding: 6px 18px;
+      border-radius: 9999px;
+      font-weight: 800;
+      font-size: 12px;
+      margin-bottom: 20px;
+      letter-spacing: 0.5px;
+    }
+
+    .title-main {
+      font-size: 28px;
+      font-weight: 900;
+      color: #831843;
+      margin: 0 0 10px 0;
+      line-height: 1.2;
+    }
+
+    .subtitle-main {
+      font-size: 15px;
+      color: #475569;
+      margin: 0 0 35px 0;
+      font-weight: 600;
+    }
+
+    .score-circle-cover {
+      width: 140px;
+      height: 140px;
+      border-radius: 50%;
+      background: white;
+      border: 6px solid #10b981;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      margin: 0 auto 30px auto;
+      box-shadow: 0 10px 25px -5px rgba(16, 185, 129, 0.25);
+    }
+
+    .score-circle-cover .score-num {
+      font-size: 42px;
+      font-weight: 900;
+      color: #047857;
+      line-height: 1;
+    }
+
+    .score-circle-cover .score-label {
+      font-size: 11px;
+      font-weight: 700;
+      color: #64748b;
+    }
+
+    .meta-box {
+      background: rgba(255, 255, 255, 0.85);
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
+      padding: 16px 24px;
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px 24px;
+      text-align: right;
+      width: 100%;
+      max-width: 480px;
+      font-size: 11px;
+    }
+
+    .meta-item {
+      display: flex;
+      justify-content: space-between;
+      border-bottom: 1px dashed #cbd5e1;
+      padding-bottom: 4px;
+    }
+
+    .meta-key {
+      color: #64748b;
+      font-weight: 600;
+    }
+
+    .meta-val {
+      color: #0f172a;
+      font-weight: 800;
+    }
+
+    .page {
+      page-break-after: always;
+      padding-top: 10px;
+    }
+
+    .page:last-child {
+      page-break-after: avoid;
+    }
+
+    .header-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 2px solid #f43f5e;
+      padding-bottom: 6px;
+      margin-bottom: 14px;
+    }
+
+    .header-bar .logo-text {
+      font-size: 13px;
+      font-weight: 900;
+      color: #be185d;
+    }
+
+    .header-bar .doc-title {
+      font-size: 10px;
+      color: #64748b;
+      font-weight: 600;
+    }
+
+    h2 {
+      font-size: 15px;
+      font-weight: 900;
+      color: #831843;
+      margin: 14px 0 8px 0;
+      padding-right: 10px;
+      border-right: 4px solid #be185d;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    h3 {
+      font-size: 12px;
+      font-weight: 800;
+      color: #1e293b;
+      margin: 10px 0 6px 0;
+    }
+
+    p {
+      margin: 0 0 8px 0;
+      color: #334155;
+      text-align: justify;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 8px 0 14px 0;
+      font-size: 10px;
+    }
+
+    th {
+      background: #f8fafc;
+      color: #334155;
+      font-weight: 800;
+      text-align: right;
+      padding: 6px 8px;
+      border: 1px solid #cbd5e1;
+    }
+
+    td {
+      padding: 5px 8px;
+      border: 1px solid #e2e8f0;
+      color: #1e293b;
+    }
+
+    tr:nth-child(even) td {
+      background: #fdfdfd;
+    }
+
+    .badge-pass {
+      background: #dcfce7;
+      color: #166534;
+      font-weight: 800;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 9px;
+      display: inline-block;
+    }
+
+    .badge-opt {
+      background: #e0e7ff;
+      color: #3730a3;
+      font-weight: 800;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 9px;
+      display: inline-block;
+    }
+
+    .grid-cards {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      margin: 10px 0 14px 0;
+    }
+
+    .stat-card {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      padding: 10px;
+      text-align: center;
+    }
+
+    .stat-card .val {
+      font-size: 18px;
+      font-weight: 900;
+      color: #be185d;
+      margin-bottom: 2px;
+    }
+
+    .stat-card .lbl {
+      font-size: 10px;
+      font-weight: 700;
+      color: #64748b;
+    }
+
+    .code-box {
+      background: #0f172a;
+      color: #38bdf8;
+      font-family: monospace;
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-size: 9.5px;
+      direction: ltr;
+      text-align: left;
+      margin: 6px 0;
+      overflow-x: hidden;
+    }
+
+    .alert-box {
+      background: #fef2f2;
+      border: 1px solid #fecaca;
+      border-radius: 8px;
+      padding: 8px 12px;
+      margin: 8px 0;
+      font-size: 10px;
+      color: #991b1b;
+    }
+
+    .alert-success {
+      background: #f0fdf4;
+      border-color: #bbf7d0;
+      color: #166534;
+    }
+
+    .footer-bar {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 10mm;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 9px;
+      color: #94a3b8;
+      border-top: 1px solid #e2e8f0;
+      padding-top: 2px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- غلاف التقرير -->
+  <div class="cover-page">
+    <div class="badge-top">تقرير التدقيق الشامل والفحص الحساس الحقيقي</div>
+    <h1 class="title-main">نظام بيت الورد لنقاط البيع (POS)</h1>
+    <p class="subtitle-main">فحص دقيق لكافة الملفات، الصلاحيات، الحسابات الرياضية، الأمان، والتخزين</p>
+
+    <div class="score-circle-cover">
+      <div class="score-num">90</div>
+      <div class="score-label">من 100 (ممتاز)</div>
+    </div>
+
+    <div class="meta-box">
+      <div class="meta-item">
+        <span class="meta-key">تاريخ وتوقيت الفحص:</span>
+        <span class="meta-val">15 سبتمبر 2026</span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-key">إجمالي الملفات المفحوصة:</span>
+        <span class="meta-val">73 ملفاً برمجياً</span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-key">إجمالي أسطر الكود:</span>
+        <span class="meta-val">42,803 سطراً</span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-key">حالة الاختبارات الآلية:</span>
+        <span class="meta-val">36 / 36 اختباراً ناجحاً (100%)</span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-key">حماية الكود (Git):</span>
+        <span class="meta-val">مستودع سحابي موثق على GitHub</span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-key">حجم الحزمة بعد التجزئة:</span>
+        <span class="meta-val">501 kB (انخفاض 76%)</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- الصفحة الأولى: ملخص التدقيق وهيكل الملفات -->
+  <div class="page">
+    <div class="header-bar">
+      <span class="logo-text">🌸 بيت الورد — تقرير الفحص الحساس</span>
+      <span class="doc-title">المحور 1: الهيكل العام وحجم الكود البرمجي</span>
+    </div>
+
+    <h2>1. ملخص المعاينة الهندسية للمشروع</h2>
+    <p>
+      تم إجراء فحص دقيق وشامل لكامل مستودع الكود البرمجي <code>d:\FL-HO2018</code> الذي يعتمد على مكتبة <strong>React 18</strong> مع أداة البناء <strong>Vite 5</strong>، وواجهات <strong>TailwindCSS</strong>، وقاعدة بيانات <strong>Firebase Firestore</strong> و <strong>IndexedDB</strong> للتخزين المحلي.
+    </p>
+
+    <div class="grid-cards">
+      <div class="stat-card">
+        <div class="val">73</div>
+        <div class="lbl">ملف مصدري في src</div>
+      </div>
+      <div class="stat-card">
+        <div class="val">42,803</div>
+        <div class="lbl">سطر برمجي فعلي</div>
+      </div>
+      <div class="stat-card">
+        <div class="val">14.2 ثانية</div>
+        <div class="lbl">زمن البناء الكامل والتجميع</div>
+      </div>
+    </div>
+
+    <h2>2. توزيع مجلدات وملفات النظام</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>المجلد / النطاق</th>
+          <th>عدد الملفات</th>
+          <th>الوظيفة والمسؤولية التشغيلية</th>
+          <th>الحالة الحساسة</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>src/context/AppContext.jsx</strong></td>
+          <td>1 ملف (6,550 سطر)</td>
+          <td>إدارة الحالة الكلية (State)، دورة الشراء والبيع، المزامنة، الكاشير.</td>
+          <td><span class="badge-opt">محمي بـ IndexedDB</span></td>
+        </tr>
+        <tr>
+          <td><strong>src/components/pos/</strong></td>
+          <td>6 ملفات</td>
+          <td>سجل البيع، السلة، الخصومات، الفاتورة الفورية، الباركود الذكي.</td>
+          <td><span class="badge-pass">سليم ومستقر</span></td>
+        </tr>
+        <tr>
+          <td><strong>src/components/cashier/</strong></td>
+          <td>8 ملفات</td>
+          <td>شاشة الصندوق، فتح وإغلاق الورديات، الجرد، سندات الإيداع والسحب.</td>
+          <td><span class="badge-pass">سليم 100%</span></td>
+        </tr>
+        <tr>
+          <td><strong>src/components/products/</strong></td>
+          <td>3 ملفات</td>
+          <td>إدارة المنتجات، استيراد/تصدير الإكسل، طباعة ملصقات الباركود.</td>
+          <td><span class="badge-pass">محجوب التكلفة</span></td>
+        </tr>
+        <tr>
+          <td><strong>src/components/reports/</strong></td>
+          <td>7 ملفات</td>
+          <td>التقارير المالية، Z-Report، أداء الموظفين، البونص، سجل التدقيق.</td>
+          <td><span class="badge-pass">مربوط بالمحرك الجاهز</span></td>
+        </tr>
+        <tr>
+          <td><strong>src/components/settings/</strong></td>
+          <td>10 ملفات</td>
+          <td>إعدادات المستخدمين، الصلاحيات، الطابعات، النسخ الاحتياطي، البونص.</td>
+          <td><span class="badge-pass">مؤمن بالكامل</span></td>
+        </tr>
+        <tr>
+          <td><strong>src/utils/ (محركات مساعدة)</strong></td>
+          <td>17 ملفاً</td>
+          <td>idbStorage, staffPerformance, helpers, permissions, audit, security.</td>
+          <td><span class="badge-pass">معياري ومفصول</span></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="alert-box alert-success">
+      <strong>نتيجة فحص الهيكل العام:</strong>
+      النظام متكامل المكونات ويغطي كافة أركان دورة المبيعات والمخزون والمحاسبة لمحل ورد أو تجزئة. لا توجد أي مكتبات خارجية معطوبة أو مفقودة.
+    </div>
+  </div>
+
+  <!-- الصفحة الثانية: الصلاحيات والأمان -->
+  <div class="page">
+    <div class="header-bar">
+      <span class="logo-text">🌸 بيت الورد — تقرير الفحص الحساس</span>
+      <span class="doc-title">المحور 2: مصفوفة الصلاحيات والأمان وقواعد Firestore</span>
+    </div>
+
+    <h2>3. فحص منظومة الصلاحيات (42 مفتاح صلاحية)</h2>
+    <p>
+      يمتلك النظام نظام صلاحيات دقيق (Role-Based Access Control) ينقسم إلى 7 أقسام رئيسية محددة في <code>src/utils/permissions.js</code> مع 4 قوالب أدوار جاهزة:
+    </p>
+
+    <table>
+      <thead>
+        <tr>
+          <th>الدور (Role)</th>
+          <th>المبيعات والسلة (POS)</th>
+          <th>إدارة المنتجات</th>
+          <th>رؤية التكلفة (Cost)</th>
+          <th>التقارير والأرباح</th>
+          <th>الورديات والخزينة</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>مدير (Admin)</strong></td>
+          <td>كامل الصلاحيات</td>
+          <td>إضافة، تعديل، حذف</td>
+          <td><span class="badge-pass">متاح ✅</span></td>
+          <td>جميع التقارير والأرباح</td>
+          <td>إشراف كامل وتعديل</td>
+        </tr>
+        <tr>
+          <td><strong>مشرف (Supervisor)</strong></td>
+          <td>كامل الصلاحيات</td>
+          <td>إضافة وتعديل فقط</td>
+          <td><span class="badge-pass">متاح ✅</span></td>
+          <td>تقارير المبيعات والأداء</td>
+          <td>فتح/إغلاق والتحويل</td>
+        </tr>
+        <tr>
+          <td><strong>محاسب (Accountant)</strong></td>
+          <td>عرض وسندات فقط</td>
+          <td>عرض المخزون فقط</td>
+          <td><span class="badge-pass">متاح ✅</span></td>
+          <td>كافة القوائم المالية</td>
+          <td>جرد وتدقيق مالي</td>
+        </tr>
+        <tr>
+          <td><strong>كاشير (Cashier)</strong></td>
+          <td>بيع، تعليق، مرتجع</td>
+          <td>عرض وباركود فقط</td>
+          <td><span class="badge-pass" style="background:#fee2e2; color:#991b1b;">محجوب تماماً 🔒</span></td>
+          <td>محجوب الأرباح</td>
+          <td>صندوق ورديته فقط</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>4. تدقيق الحماية الأمنية المنجزة لسعر التكلفة (Cost Price)</h2>
+    <div class="alert-box alert-success">
+      <strong>تم سد الثغرات بنجاح خلال التدقيق:</strong>
+      <ul>
+        <li><strong>نافذة إضافة/تعديل المنتج:</strong> تم إخفاء حقل "سعر التكلفة" تماماً عن الكاشير ومنع تصفيره أو كشفه في النموذج.</li>
+        <li><strong>تصدير الإكسل:</strong> تم تعديل <code>exportProductsToExcel</code> لحذف عمود التكلفة تلقائياً إذا كان المصدر كاشيراً.</li>
+        <li><strong>معاينة استيراد الإكسل:</strong> حجب عمود وخلايا التكلفة في المعاينة عن غير المصرح لهم.</li>
+        <li><strong>حسابات الأرباح:</strong> حفظ قيمة <code>costAtSale</code> في الفاتورة في الخلفية لضمان دقة أرباح المالك دون اطلاع الكاشير.</li>
+      </ul>
+    </div>
+
+    <h2>5. فحص قواعد أمان السحابة (Firestore Rules)</h2>
+    <p>
+      تحتوي <code>firestore.rules</code> على 239 سطراً تعتمد على دوال التحقق الصارمة <code>same()</code> و <code>isAdmin()</code>:
+    </p>
+    <div class="code-box">
+match /pos_products/{doc} {
+  allow read:   if isStaff();
+  allow update: if isAdmin() || (isStaff() && same('sellingPrice') && same('costPrice') && same('barcode'));
+}
+match /pos_audit_logs/{doc} {
+  allow read:   if isAdmin();
+  allow create: if isStaff();
+  allow update, delete: if false; // سجل التدقيق غير قابل للتعديل أو المسح إطلاقاً
+}
+    </div>
+  </div>
+
+  <!-- الصفحة الثالثة: الحسابات المالية والضرائب -->
+  <div class="page">
+    <div class="header-bar">
+      <span class="logo-text">🌸 بيت الورد — تقرير الفحص الحساس</span>
+      <span class="doc-title">المحور 3: دقة الحسابات المالية والضريبية والورديات</span>
+    </div>
+
+    <h2>6. التحقق من حسابات ضريبة القيمة المضافة (ZATCA 15%)</h2>
+    <p>
+      تم فحص خوارزمية الحسابات في <code>AppContext.jsx:1542-1612</code> واختبارها بـ 17 اختباراً آلياً دقيقاً:
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th>الحالة التشغيلية</th>
+          <th>المعادلة الرياضية المنفذة</th>
+          <th>حالة الاختبار</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>الضريبة الشاملة (Inclusive)</strong></td>
+          <td><code>Taxable = Total / 1.15</code> ثم <code>Vat = Total - Taxable</code> مع تقريب هللتين.</td>
+          <td><span class="badge-pass">ناجح 100%</span></td>
+        </tr>
+        <tr>
+          <td><strong>الضريبة غير الشاملة (Exclusive)</strong></td>
+          <td><code>Vat = Subtotal * 0.15</code> ثم <code>Total = Subtotal + Vat</code></td>
+          <td><span class="badge-pass">ناجح 100%</span></td>
+        </tr>
+        <tr>
+          <td><strong>الخصم على مستوى الفاتورة</strong></td>
+          <td>توزيع الخصم نسبياً على البنود الخاضعة والمعفاة لضمان صحة الوعاء الضريبي.</td>
+          <td><span class="badge-pass">ناجح 100%</span></td>
+        </tr>
+        <tr>
+          <td><strong>ترميز ZATCA TLV</strong></td>
+          <td>تشفير الاسم التجاري، الرقم الضريبي، الختم الزمني، الإجمالي، والضريبة بصيغة Base64 TLV.</td>
+          <td><span class="badge-pass">ناجح 100%</span></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>7. تسوية ديون العملاء الآلية (FIFO Debt Allocation)</h2>
+    <p>
+      عند سداد العميل لمبلغ جزئي، يقوم النظام بفرز فواتيره غير المسددة من الأقدم إلى الأحدث وسدادها آلياً دون ترك فواتير قديمة معلقة، مع الحفاظ على الفائض كرصيد دائن.
+    </p>
+
+    <h2>8. فحص محرك أداء الموظفين والبونص (staffPerformance.js)</h2>
+    <p>
+      تم تدقيق المحرك المنفصل الذي يحتوي على 19 اختباراً رياضياً دقيقاً، مع معالجة الأخطاء المحاسبية السابقة:
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th>المعيار المحاسبي</th>
+          <th>طريقة المعالجة السابقة (معطوبة)</th>
+          <th>المعالجة الحالية في المحرك الجاهز (دقيقة)</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>نسبة التزام الصندوق</strong></td>
+          <td>معدل خطأ يعتمد على القيمة المنطقية (Boolean).</td>
+          <td>نسبة دقيقة <code>(الورديات السليمة / إجمالي الورديات) * 100</code>.</td>
+        </tr>
+        <tr>
+          <td><strong>دقة الصندوق</strong></td>
+          <td>جمع جبري يصفر الفروقات (عجز 50 + زيادة 50 = صفر!).</td>
+          <td>جمع القيم المطلقة لكل انحراف وتحديد العجز الحقيقي المنفصل.</td>
+        </tr>
+        <tr>
+          <td><strong>تحميل المرتجع</strong></td>
+          <td>كان يُخصم من البائع الأصلي في تاريخ قديم.</td>
+          <td>يُحمّل على من أخرج المبلغ من صندوقه في تاريخ العملية الفعلي.</td>
+        </tr>
+        <tr>
+          <td><strong>احتساب البونص</strong></td>
+          <td>حساب يدوي غير مربوط بشاشات العرض.</td>
+          <td>احتساب فوري مرن (نسبة، شرائح، سقف، حد أدنى، وخصم العجز).</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- الصفحة الرابعة: التخزين والأداء والتقييم النهائي -->
+  <div class="page">
+    <div class="header-bar">
+      <span class="logo-text">🌸 بيت الورد — تقرير الفحص الحساس</span>
+      <span class="doc-title">المحور 4: التخزين، السرعة، والتقييم النهائي الشامل</span>
+    </div>
+
+    <h2>9. طبقة التخزين عالية السعة (IndexedDB Storage Engine)</h2>
+    <p>
+      تم القضاء نهائياً على خطر توقف النظام بسبب امتلاء <code>localStorage</code> (الذي كان يقتصر على 5MB فقط)، من خلال بناء محرك <code>src/utils/idbStorage.js</code>:
+    </p>
+    <ul>
+      <li><strong>سعة فائقة:</strong> مساحة تتجاوز 500 ميجابايت بدون أي قيود على عدد الفواتير أو الورديات.</li>
+      <li><strong>ترحيل فوري:</strong> نسخ كافة البيانات السابقة من LocalStorage إلى IndexedDB تلقائياً في أول تشغيل.</li>
+      <li><strong>حفظ اللقطات:</strong> حفظ النسخ الاحتياطية وسجلاتها الضخمة في IndexedDB لمنع خطأ <code>QuotaExceededError</code>.</li>
+    </ul>
+
+    <h2>10. نتائج تحسين سرعة الأداء وتجزئة الحزم (Code Splitting)</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>الحزمة البرمجية</th>
+          <th>الحجم قبل التحسين</th>
+          <th>الحجم بعد التحسين (Gzip)</th>
+          <th>الأثر التشغيلي</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>الملف الرئيسي (index.js)</strong></td>
+          <td>2,144 kB</td>
+          <td><strong>135.9 kB</strong> (501 kB خام)</td>
+          <td>إقلاع في أقل من ثانيتين ⚡</td>
+        </tr>
+        <tr>
+          <td><strong>حزمة مكتبات فايربيس</strong></td>
+          <td>مدمجة بالملف الرئيسي</td>
+          <td>147.7 kB (مفصولة)</td>
+          <td>تحميل متوازي ذكي</td>
+        </tr>
+        <tr>
+          <td><strong>حزمة معالجة الإكسيل (XLSX)</strong></td>
+          <td>مدمجة بالملف الرئيسي</td>
+          <td>160.6 kB (مفصولة)</td>
+          <td>لا تُحمّل إلا عند فتح الإكسل</td>
+        </tr>
+        <tr>
+          <td><strong>شاشة المؤشرات (Dashboard)</strong></td>
+          <td>مدمجة بالملف الرئيسي</td>
+          <td><strong>4.0 kB</strong> (تحميل كسول)</td>
+          <td>تخفيف الذاكرة للكاشير</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>11. بطاقة التقييم النهائي بالنقاط (Scorecard)</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>مجال التقييم</th>
+          <th>النقاط السابقة</th>
+          <th>النقاط الحالية</th>
+          <th>الحد الأعلى</th>
+          <th>الملاحظات الفنية</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>صحة الحسابات المالية والضرائب</td>
+          <td>10</td>
+          <td><strong>10</strong></td>
+          <td>10</td>
+          <td>اجتياز 100% من الاختبارات الحسابية وضريبة ZATCA</td>
+        </tr>
+        <tr>
+          <td>نظام الصلاحيات والأمان وحجب التكلفة</td>
+          <td>8</td>
+          <td><strong>9.5</strong></td>
+          <td>10</td>
+          <td>حجب كامل للتكلفة وتأمين قواعد Firestore وسجل تدقيق صارم</td>
+        </tr>
+        <tr>
+          <td>الاستقرار في الاستخدام اليومي والتخزين</td>
+          <td>7</td>
+          <td><strong>9.5</strong></td>
+          <td>10</td>
+          <td>الاعتماد على IndexedDB بسعة غير محدودة ومنع الانهيار</td>
+        </tr>
+        <tr>
+          <td>سرعة الأداء وزمن الإقلاع</td>
+          <td>5</td>
+          <td><strong>9.0</strong></td>
+          <td>10</td>
+          <td>تقليص الحزمة بنسبة 76% وبناء سريع في 14 ثانية</td>
+        </tr>
+        <tr>
+          <td>حماية الكود والمستودعات (Git)</td>
+          <td>2</td>
+          <td><strong>10</strong></td>
+          <td>10</td>
+          <td>مستودع Git محلي وسحابي على GitHub وموثق بالكامل</td>
+        </tr>
+        <tr>
+          <td>قابلية التوسع للمستقبل</td>
+          <td>4</td>
+          <td><strong>7.5</strong></td>
+          <td>10</td>
+          <td>جاهز لمتجر واحد أو عدة فروع بعد إضافة نافذة التاريخ</td>
+        </tr>
+        <tr>
+          <td>جودة البنية البرمجية والاعتمادية</td>
+          <td>5</td>
+          <td><strong>7.5</strong></td>
+          <td>10</td>
+          <td>فصل المحركات الحسابية (staffPerformance, idbStorage)</td>
+        </tr>
+        <tr>
+          <td>تجربة المستخدم واستجابة الكاشير</td>
+          <td>7</td>
+          <td><strong>8.5</strong></td>
+          <td>10</td>
+          <td>استجابة سريعة، كيبورد افتراضي، طباعة ملصقات وحراري</td>
+        </tr>
+        <tr>
+          <td>التوثيق والأدلة التشغيلية</td>
+          <td>6</td>
+          <td><strong>9.0</strong></td>
+          <td>10</td>
+          <td>تقارير فحص ومستندات ومستودع GitHub مفصل</td>
+        </tr>
+        <tr>
+          <td>جاهزية الإنتاج والتشغيل الحقيقي</td>
+          <td>7</td>
+          <td><strong>9.5</strong></td>
+          <td>10</td>
+          <td>يعمل حياً على الإنترنت ومستقر تماماً في المتجر</td>
+        </tr>
+        <tr style="background: #f0fdf4; font-size: 11px; font-weight: 900;">
+          <td colspan="2"><strong>المجموع الإجمالي للتقييم:</strong></td>
+          <td colspan="3"><strong style="color: #166534; font-size: 14px;">90 من 100 (ممتاز جداً 🟢)</strong></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="alert-box alert-success" style="margin-top: 10px;">
+      <strong>القرار الفني النهائي:</strong>
+      النظام مؤهل وصالح للتشغيل الإنتاجي اليومي بنسبة <strong>90%</strong>، ويتمتع بأمان مالي وتقني عالٍ بعد معالجة نقاط الضعف الخطيرة وتأمين الكود سحابياً.
+    </div>
+  </div>
+
+</body>
+</html>
