@@ -398,6 +398,7 @@ const MODULE_PERMISSION_MAP = {
   cashDrawer:  'drawer_open_close',
   reports:     'reports_view_sales',
   userReports: 'reports_view_sales',
+  ownerMobileDashboard: 'reports_view_profits', // لوحة المالك للمدير وحاملي صلاحية الأرباح
   settings:    'settings_store_info'
 };
 

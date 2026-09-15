@@ -5,6 +5,7 @@ import { formatMoney, generateSequentialBarcode } from '../../utils/helpers';
 import { checkUserPermission } from '../../utils/permissions';
 import { exportProductsToExcel } from '../../utils/excelHelper';
 import { ExcelImportModal } from './ExcelImportModal';
+import { FlowerSpoilageModal } from './FlowerSpoilageModal';
 import { printThermalBarcodeLabels } from '../../utils/printHelper';
 import JsBarcode from 'jsbarcode';
 
@@ -103,6 +104,7 @@ export const ProductsScreen = () => {
   const [editingProduct, setEditingProduct] = useState(null);
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
   const [isExcelImportOpen, setIsExcelImportOpen] = useState(false);
+  const [isSpoilageModalOpen, setIsSpoilageModalOpen] = useState(false);
   const [excelToast, setExcelToast] = useState(null);
   const [newCatName, setNewCatName] = useState('');
   
@@ -378,6 +380,16 @@ export const ProductsScreen = () => {
           >
             <Download className="w-4 h-4 text-blue-100" />
             <span>تصدير إكسيل 📤</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setIsSpoilageModalOpen(true)}
+            className="px-3.5 py-2.5 bg-gradient-to-r from-rose-700 to-pink-700 hover:from-rose-600 hover:to-pink-600 border-2 border-rose-300 text-white rounded-2xl text-xs font-black transition flex items-center gap-1.5 active:scale-95 shadow-md"
+            title="سجل وإدارة تالف وهالك الورد الطبيعي واحتساب الخسائر"
+          >
+            <span className="text-sm">🥀</span>
+            <span>سجل هالك وتالف الورد</span>
           </button>
 
           <button
@@ -1441,6 +1453,12 @@ export const ProductsScreen = () => {
           setExcelToast(`✅ تم استيراد ${report.addedCount} صنف جديد وتحديث ${report.updatedCount} صنف بنجاح! 🌸`);
           setTimeout(() => setExcelToast(null), 6000);
         }}
+      />
+
+      {/* نافذة وسجل تالف وهالك الورد الطبيعي */}
+      <FlowerSpoilageModal
+        isOpen={isSpoilageModalOpen}
+        onClose={() => setIsSpoilageModalOpen(false)}
       />
 
     </div>

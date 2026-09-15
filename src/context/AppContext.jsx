@@ -459,6 +459,10 @@ export const AppProvider = ({ children }) => {
   // سجل إضافة فقط (append-only): لا يُعدَّل ولا يُحذف من داخل البرنامج.
   const [auditLogs, setAuditLogs] = useState(() => getSaved('audit_logs', []));
 
+  // ===================== سجل تالف وهالك الورد الطبيعي (Flower Spoilage) =====================
+  // يسجّل كميات الورد الذابل أو المكسور مع خصمها التلقائي من المخزون واحتساب الخسائر
+  const [spoilageLogs, setSpoilageLogs] = useState(() => getSaved('spoilage_logs', []));
+
   // مركز التنبيهات والإشعارات اللحظية بين المستخدمين
   const [notifications, setNotifications] = useState(() => getSaved('notifications', []));
   const [unreadNotificationsCount, setUnreadNotificationsCount] = useState(() => {
@@ -1115,6 +1119,17 @@ export const AppProvider = ({ children }) => {
           return merged;
         });
       }
+      else if (key === 'spoilage_logs' && Array.isArray(remoteData)) {
+        setSpoilageLogs(prev => {
+          if (remoteData.length === 0) {
+            localStorage.setItem('naif_pos_v3_spoilage_logs', '[]');
+            return [];
+          }
+          const merged = remoteData;
+          localStorage.setItem('naif_pos_v3_spoilage_logs', JSON.stringify(merged));
+          return merged;
+        });
+      }
     });
 
     setTimeout(() => {
@@ -1253,6 +1268,7 @@ export const AppProvider = ({ children }) => {
   useEffect(() => { saveAndSync('receipts', paymentReceipts); }, [paymentReceipts]);
   useEffect(() => { saveAndSync('shifts_history', shiftsHistory); }, [shiftsHistory]);
   useEffect(() => { saveAndSync('treasury_ledger', treasuryLedger); }, [treasuryLedger]);
+  useEffect(() => { saveAndSync('spoilage_logs', spoilageLogs); }, [spoilageLogs]);
 
   // دوال التحكم اليدوي والمزامنة التوحيدية الشاملة
   const pushAllToCloud = async () => {
@@ -1272,7 +1288,8 @@ export const AppProvider = ({ children }) => {
       shifts_history: shiftsHistory,
       held_bills: heldBills,
       user_shifts: userShifts,
-      treasury_ledger: treasuryLedger
+      treasury_ledger: treasuryLedger,
+      spoilage_logs: spoilageLogs
     };
 
     return await syncEngine.pushAllLocal(currentState);
@@ -1359,6 +1376,7 @@ export const AppProvider = ({ children }) => {
       if (result.data.shifts_history) setShiftsHistory(result.data.shifts_history);
       if (result.data.held_bills) setHeldBills(result.data.held_bills);
       if (result.data.treasury_ledger) setTreasuryLedger(result.data.treasury_ledger);
+      if (result.data.spoilage_logs) setSpoilageLogs(result.data.spoilage_logs);
     }
     return result;
   };
@@ -2579,6 +2597,103 @@ export const AppProvider = ({ children }) => {
       saveAndSync('products', current, true);
       return current;
     });
+  };
+
+  // =========================================================================
+  //  تسجيل تالف وهالك الورد الطبيعي (Flower Spoilage)
+  // =========================================================================
+  const recordSpoilage = ({ productId, productName, qty, costPrice, sellingPrice, reason, notes, reportedBy }) => {
+    const quantity = Number(qty) || 0;
+    if (quantity <= 0 || !productId) return false;
+
+    // حساب الخسارة المالية بناء على سعر التكلفة إن وُجد أو سعر البيع
+    const unitCost = Number(costPrice) || 0;
+    const unitPrice = Number(sellingPrice) || 0;
+    const totalCostLoss = Math.round(quantity * unitCost * 100) / 100;
+
+    const newLog = {
+      id: `spoilage-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      productId,
+      productName: productName || 'صنف غير محدد',
+      qty: quantity,
+      unitCost,
+      unitPrice,
+      totalCostLoss,
+      reason: reason || 'ذبول طبيعي',
+      notes: notes || '',
+      reportedBy: reportedBy || currentUser?.name || 'كاشير',
+      userId: currentUser?.id || '',
+      date: new Date().toISOString(),
+      at: Date.now()
+    };
+
+    // 1. إضافة القيد إلى سجل التالف
+    setSpoilageLogs(prev => {
+      const updated = [newLog, ...(Array.isArray(prev) ? prev : [])];
+      saveAndSync('spoilage_logs', updated, true);
+      return updated;
+    });
+
+    // 2. خصم الكمية التالفة فورياً من مخزون المنتج
+    syncEngine.adjustStock([{ id: productId, delta: -quantity }]);
+    setProducts(prev => {
+      const updated = (prev || []).map(p => p.id === productId ? {
+        ...p,
+        stock: Math.max(0, (Number(p.stock) || 0) - quantity),
+        updatedAt: new Date().toISOString()
+      } : p);
+      saveAndSync('products', updated, true);
+      return updated;
+    });
+
+    // 3. تدوين الحدث في سجل التدقيق
+    try {
+      logAudit({
+        action: 'تسجيل تالف وهالك ورد',
+        target: productName,
+        details: `إتلاف ${quantity} حبة/عود - السبب: ${reason || 'ذبول طبيعي'} - الخسارة: ${totalCostLoss} ر.س ${notes ? '(' + notes + ')' : ''}`,
+        amount: totalCostLoss,
+        severity: totalCostLoss > 100 ? 'high' : 'normal'
+      });
+    } catch (e) {}
+
+    return newLog;
+  };
+
+  // حذف قيد تالف مع خيار استرجاع المخزون
+  const deleteSpoilageRecord = (spoilageId, restoreStock = false) => {
+    const targetLog = (spoilageLogs || []).find(l => l.id === spoilageId);
+    if (!targetLog) return false;
+
+    if (restoreStock && targetLog.productId && targetLog.qty > 0) {
+      syncEngine.adjustStock([{ id: targetLog.productId, delta: targetLog.qty }]);
+      setProducts(prev => {
+        const updated = (prev || []).map(p => p.id === targetLog.productId ? {
+          ...p,
+          stock: (Number(p.stock) || 0) + Number(targetLog.qty),
+          updatedAt: new Date().toISOString()
+        } : p);
+        saveAndSync('products', updated, true);
+        return updated;
+      });
+    }
+
+    setSpoilageLogs(prev => {
+      const updated = (prev || []).filter(l => l.id !== spoilageId);
+      saveAndSync('spoilage_logs', updated, true);
+      return updated;
+    });
+
+    try {
+      logAudit({
+        action: 'حذف قيد تالف',
+        target: targetLog.productName,
+        details: `حذف قيد هالك بقيمة ${targetLog.totalCostLoss} ر.س ${restoreStock ? '(مع استعادة المخزون)' : ''}`,
+        severity: 'normal'
+      });
+    } catch (e) {}
+
+    return true;
   };
 
   // إدارة التصنيفات
@@ -5279,6 +5394,7 @@ export const AppProvider = ({ children }) => {
       shiftsHistory,
       userShifts,
       heldBills,
+      spoilageLogs,
       exportedAt: new Date().toISOString()
     };
     const blob = new Blob([JSON.stringify(fullData, null, 2)], { type: 'application/json' });
@@ -5313,6 +5429,7 @@ export const AppProvider = ({ children }) => {
       storeInfo, categories, products, customers, suppliers, users,
       invoices, purchases, expenses, paymentReceipts,
       drawerTransactions, shiftsHistory, userShifts, heldBills,
+      spoilageLogs,
       exportedAt: new Date().toISOString()
     };
     const strData = JSON.stringify(payload);
@@ -5525,6 +5642,14 @@ export const AppProvider = ({ children }) => {
         setUsers(nextUsers);
         localStorage.setItem('naif_pos_v3_users', JSON.stringify(nextUsers));
         syncEngine.saveKey('users', nextUsers, true);
+      }
+
+      // 12. تحديث سجل تالف وهالك الورد
+      if (Array.isArray(data.spoilageLogs)) {
+        const nextSpoilage = isMerge ? [...data.spoilageLogs, ...spoilageLogs] : data.spoilageLogs;
+        setSpoilageLogs(nextSpoilage);
+        localStorage.setItem('naif_pos_v3_spoilage_logs', JSON.stringify(nextSpoilage));
+        syncEngine.saveKey('spoilage_logs', nextSpoilage, true);
       }
 
       return {
@@ -6554,6 +6679,10 @@ export const AppProvider = ({ children }) => {
       resetLoginAuditLogs,
       resetFiscalYear,
       factoryResetAll,
+      spoilageLogs,
+      setSpoilageLogs,
+      recordSpoilage,
+      deleteSpoilageRecord,
       resolveUserName,
       hashPin,
       verifyPin

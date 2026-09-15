@@ -22,6 +22,7 @@ const ExpensesScreen = React.lazy(() => import('./components/expenses/ExpensesSc
 const CashDrawerScreen = React.lazy(() => import('./components/cashier/CashDrawerScreen').then(m => ({ default: m.CashDrawerScreen })));
 const ReportsScreen = React.lazy(() => import('./components/reports/ReportsScreen').then(m => ({ default: m.ReportsScreen })));
 const SettingsScreen = React.lazy(() => import('./components/settings/SettingsScreen').then(m => ({ default: m.SettingsScreen })));
+const OwnerMobileDashboard = React.lazy(() => import('./components/dashboard/OwnerMobileDashboard').then(m => ({ default: m.OwnerMobileDashboard })));
 
 // مؤشر تحميل أنيق للشاشات الثانوية عند فتحها لأول مرة
 // شاشة تُعرض بدل المحتوى عند عدم وجود صلاحية
@@ -367,6 +368,12 @@ export default function App() {
           <React.Suspense fallback={<ScreenLoader />}>
             {currentTab === 'dashboard' && (
               <Dashboard setCurrentTab={setCurrentTab} />
+            )}
+
+            {currentTab === 'ownerMobileDashboard' && (
+              checkUserPermission(currentUser, 'reports_view_profits')
+                ? <OwnerMobileDashboard setCurrentTab={setCurrentTab} />
+                : <NoPermissionScreen what="لوحة تحكم ومتابعة المالك" />
             )}
 
             {currentTab === 'pos' && (

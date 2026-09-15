@@ -54,7 +54,8 @@ export const SYNC_KEYS = [
   'receipts',
   'held_bills',
   'shifts_history',
-  'treasury_ledger'    // كان يُكتب ولا يُقرأ — أُضيف
+  'treasury_ledger',   // كان يُكتب ولا يُقرأ — أُضيف
+  'spoilage_logs'      // سجل تالف وهالك الورد الطبيعي
 ];
 
 // login_logs سجل تدقيق: يقرأه المدير فقط حسب القواعد، فلا معنى

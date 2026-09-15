@@ -1,6 +1,6 @@
 import React from 'react';
 import { useApp } from '../../context/AppContext';
-import { X, Store, LayoutDashboard, ShoppingCart, Receipt, Package, Users, Truck, DollarSign, PieChart, Settings, ChevronLeft, Lock, LogOut } from 'lucide-react';
+import { X, Store, LayoutDashboard, ShoppingCart, Receipt, Package, Users, Truck, DollarSign, PieChart, Settings, ChevronLeft, Lock, LogOut, Smartphone } from 'lucide-react';
 import { canAccessModule } from '../../utils/permissions';
 
 export const Sidebar = ({ isOpen, onClose, currentTab, setCurrentTab }) => {
@@ -17,6 +17,7 @@ export const Sidebar = ({ isOpen, onClose, currentTab, setCurrentTab }) => {
 
   const allModulesDef = {
     dashboard: { id: 'dashboard', label: 'الرئيسية / لوحة التحكم', icon: LayoutDashboard, desc: 'إحصائيات المبيعات والوردية' },
+    ownerMobileDashboard: { id: 'ownerMobileDashboard', label: 'لوحة المالك المباشرة 📱', icon: Smartphone, desc: 'متابعة المبيعات والأرباح والدرج للجوال' },
     pos: { id: 'pos', label: 'نقطة البيع (الكاشير)', icon: ShoppingCart, desc: 'تسجيل الفواتير السريعة' },
     invoices: { id: 'invoices', label: 'سجل الفواتير والمعلقة', icon: Receipt, desc: 'إدارة الفواتير والاسترجاع' },
     products: { id: 'products', label: 'المنتجات والمخزون', icon: Package, desc: 'الأصناف والتصنيفات والجرد' },
@@ -29,10 +30,13 @@ export const Sidebar = ({ isOpen, onClose, currentTab, setCurrentTab }) => {
     settings: { id: 'settings', label: 'إعدادات النظام والتهيئة', icon: Settings, desc: 'تخصيص النظام والطابعة والواتساب' },
   };
 
-  const savedOrder = storeInfo.menuItemsOrder || ['dashboard', 'pos', 'invoices', 'products', 'customers', 'suppliers', 'expenses', 'cashDrawer', 'reports', 'userReports', 'settings'];
-  const currentOrder = savedOrder.includes('userReports') 
-    ? savedOrder 
-    : [...savedOrder.filter(k => k !== 'settings'), 'userReports', 'settings'];
+  const savedOrder = storeInfo.menuItemsOrder || ['dashboard', 'ownerMobileDashboard', 'pos', 'invoices', 'products', 'customers', 'suppliers', 'expenses', 'cashDrawer', 'reports', 'userReports', 'settings'];
+  let currentOrder = savedOrder.includes('ownerMobileDashboard')
+    ? savedOrder
+    : ['dashboard', 'ownerMobileDashboard', ...savedOrder.filter(k => k !== 'dashboard' && k !== 'ownerMobileDashboard')];
+  if (!currentOrder.includes('userReports')) {
+    currentOrder = [...currentOrder.filter(k => k !== 'settings'), 'userReports', 'settings'];
+  }
   const visibleModules = storeInfo.visibleModules || {};
 
   return (

@@ -43,9 +43,11 @@ export const AUDIT = {
   SETTINGS_CHANGE:   'settings_change',
   ACCOUNTS_RESET:    'accounts_reset',
   BACKUP_RESTORE:    'backup_restore',
+  FLOWER_SPOILAGE:   'flower_spoilage',
 };
 
 export const AUDIT_LABELS = {
+  [AUDIT.FLOWER_SPOILAGE]:   'تسجيل تالف وهالك ورد',
   [AUDIT.INVOICE_REFUND]:    'إصدار مرتجع',
   [AUDIT.INVOICE_DELETE]:    'حذف فاتورة',
   [AUDIT.CREDIT_SETTLE]:     'سداد فاتورة آجلة',

@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
-import { ShoppingCart, Receipt, Package, Users, Truck, DollarSign, Layers, PieChart, Settings, AlertTriangle, ArrowUpRight, Store, Clock, Award } from 'lucide-react';
+import { ShoppingCart, Receipt, Package, Users, Truck, DollarSign, Layers, PieChart, Settings, AlertTriangle, ArrowUpRight, Store, Clock, Award, Smartphone } from 'lucide-react';
 import { formatMoney } from '../../utils/helpers';
 import { checkUserPermission } from '../../utils/permissions';
 import { isToday, classifyInvoicePayments, useActiveShifts } from '../../utils/useShiftMetrics';
@@ -208,13 +208,28 @@ export const Dashboard = ({ setCurrentTab }) => {
             </div>
           </div>
 
-          <button
-            onClick={() => setCurrentTab('pos')}
-            className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-purple-600 to-pink-500 hover:from-purple-500 hover:to-pink-400 text-white text-xs font-bold shadow-lg shadow-pink-500/20 flex items-center gap-1.5 transition active:scale-95 border border-pink-300/30"
-          >
-            <ShoppingCart className="w-4 h-4" />
-            <span>ابدأ البيع</span>
-          </button>
+          <div className="flex items-center gap-2">
+            {canViewProfits && (
+              <button
+                type="button"
+                onClick={() => setCurrentTab('ownerMobileDashboard')}
+                className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-amber-600 to-rose-600 hover:from-amber-500 hover:to-rose-500 text-white text-xs font-black shadow-lg shadow-rose-500/20 flex items-center gap-1.5 transition active:scale-95 border border-amber-300/40"
+                title="لوحة تحكم ومتابعة المالك المباشرة للجوال"
+              >
+                <Smartphone className="w-4 h-4" />
+                <span>لوحة المالك 📱</span>
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={() => setCurrentTab('pos')}
+              className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-purple-600 to-pink-500 hover:from-purple-500 hover:to-pink-400 text-white text-xs font-bold shadow-lg shadow-pink-500/20 flex items-center gap-1.5 transition active:scale-95 border border-pink-300/30"
+            >
+              <ShoppingCart className="w-4 h-4" />
+              <span>ابدأ البيع</span>
+            </button>
+          </div>
         </div>
 
         {/* بطاقات الإحصائيات الفورية لليوم */}
