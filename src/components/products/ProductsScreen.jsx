@@ -213,7 +213,8 @@ export const ProductsScreen = () => {
       factoryBarcode: p.factoryBarcode || '',
       categoryId: p.categoryId,
       unit: p.unit || 'حبة',
-      costPrice: String(p.costPrice || ''),
+      // حجب سعر التكلفة تماماً عن نموذج الكاشير إذا لم يمتلك الصلاحية
+      costPrice: canViewCost ? String(p.costPrice || '') : '',
       sellingPrice: String(p.sellingPrice || ''),
       stock: String(p.stock || 0),
       minStock: String(p.minStock || 3),
@@ -241,9 +242,16 @@ export const ProductsScreen = () => {
       // الكمية لم تُمسّ: لا نرسلها إطلاقاً. إرسالها كان يجعلها تُقارن بالكمية
       // الحيّة التي ربما نقصت ببيعٍ على جهاز آخر أثناء فتح النافذة، فيُحسب
       // فرق وهمي يُعيد المبيع إلى الرصيد. (نفس ما تفعله شاشة العملاء بالرصيد.)
-      let payload = formData;
+      let payload = { ...formData };
+
+      // حماية التكلفة: إذا لم يكن للمستخدم صلاحية رؤية التكلفة، لا نرسل حقل costPrice
+      // حتى لا يُصفر التكلفة الأصلية للمنتج في قاعدة البيانات
+      if (!canViewCost) {
+        delete payload.costPrice;
+      }
+
       if (oldQty === newQty) {
-        const { stock, ...withoutStock } = formData;
+        const { stock, ...withoutStock } = payload;
         payload = withoutStock;
       }
       if (oldQty !== newQty) {
@@ -264,7 +272,8 @@ export const ProductsScreen = () => {
       updateProduct(editingProduct.id, payload, reason, oldQty);
     } else {
       if (!canAdd) return denyMsg('إضافة منتجات');
-      addProduct(formData);
+      const addPayload = canViewCost ? formData : { ...formData, costPrice: 0 };
+      addProduct(addPayload);
     }
 
     setIsAddModalOpen(false);
@@ -360,7 +369,7 @@ export const ProductsScreen = () => {
             type="button"
             onClick={() => {
               if (!checkUserPermission(currentUser, 'reports_export')) return denyMsg('تصدير الملفات');
-              const res = exportProductsToExcel(filteredProducts, categories, storeInfo?.name || 'بيت الورد');
+              const res = exportProductsToExcel(filteredProducts, categories, storeInfo?.name || 'بيت الورد', canViewCost);
               setExcelToast(`✅ تم تصدير ${res.count} صنف إلى ملف (${res.fileName}) بنجاح! 🌸`);
               setTimeout(() => setExcelToast(null), 5000);
             }}
@@ -1107,7 +1116,7 @@ export const ProductsScreen = () => {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-2.5">
+              <div className={`grid ${canViewCost ? 'grid-cols-2' : 'grid-cols-1'} gap-2.5`}>
                 <div>
                   <label className="font-bold text-slate-800 block mb-1">سعر البيع (شامل الضريبة) *</label>
                   <input
@@ -1121,17 +1130,19 @@ export const ProductsScreen = () => {
                   />
                 </div>
 
-                <div>
-                  <label className="font-bold text-slate-800 block mb-1">سعر التكلفة (اختياري)</label>
-                  <input
-                    type="number"
-                    step="any"
-                    placeholder="45.00"
-                    value={formData.costPrice}
-                    onChange={(e) => setFormData({ ...formData, costPrice: e.target.value })}
-                    className="w-full px-3 py-2.5 bg-slate-50 border border-pink-200 rounded-xl font-bold text-slate-800 text-center"
-                  />
-                </div>
+                {canViewCost && (
+                  <div>
+                    <label className="font-bold text-slate-800 block mb-1">سعر التكلفة (اختياري)</label>
+                    <input
+                      type="number"
+                      step="any"
+                      placeholder="45.00"
+                      value={formData.costPrice}
+                      onChange={(e) => setFormData({ ...formData, costPrice: e.target.value })}
+                      className="w-full px-3 py-2.5 bg-slate-50 border border-pink-200 rounded-xl font-bold text-slate-800 text-center"
+                    />
+                  </div>
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-2.5">

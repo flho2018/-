@@ -1,8 +1,8 @@
 import * as XLSX from 'xlsx';
 import { generateSequentialBarcode } from './helpers';
 
-// تصدير قائمة المنتجات الحالية إلى ملف إكسيل (.xlsx) منسق واحترافي
-export const exportProductsToExcel = (products = [], categories = [], storeName = 'بيت الورد') => {
+// تصدير قائمة المنتجات الحالية إلى ملف إكسيل (.xlsx) منسق واحترافي مع حماية سعر التكلفة
+export const exportProductsToExcel = (products = [], categories = [], storeName = 'بيت الورد', canViewCost = true) => {
   try {
     const catMap = Object.create(null);
     categories.forEach(c => { if (c && c.id) catMap[c.id] = c.name; });
@@ -14,36 +14,46 @@ export const exportProductsToExcel = (products = [], categories = [], storeName 
       return /^[=+\-@\t\r]/.test(s) ? "'" + s : s;
     };
 
-    const rows = products.map(p => ({
-      'الباركود': csvSafe(p.barcode || ''),
-      'باركود المصنع': csvSafe(p.factoryBarcode || ''),
-      'اسم المنتج': csvSafe(p.name || ''),
-      'القسم / التصنيف': csvSafe(catMap[p.categoryId] || 'عام'),
-      'الوحدة': csvSafe(p.unit || 'حبة'),
-      'سعر التكلفة': Number(p.costPrice || 0),
-      'سعر البيع': Number(p.sellingPrice || 0),
-      'الكمية بالمخزون': Number(p.stock || 0),
-      'حد التنبيه الأدنى': Number(p.minStock || 3),
-      'نوع الصنف': p.isService ? 'خدمة' : 'منتج عادي',
-      'ملاحظات': csvSafe(p.notes || '')
-    }));
+    const rows = products.map(p => {
+      const row = {
+        'الباركود': csvSafe(p.barcode || ''),
+        'باركود المصنع': csvSafe(p.factoryBarcode || ''),
+        'اسم المنتج': csvSafe(p.name || ''),
+        'القسم / التصنيف': csvSafe(catMap[p.categoryId] || 'عام'),
+        'الوحدة': csvSafe(p.unit || 'حبة')
+      };
+      if (canViewCost) {
+        row['سعر التكلفة'] = Number(p.costPrice || 0);
+      }
+      row['سعر البيع'] = Number(p.sellingPrice || 0);
+      row['الكمية بالمخزون'] = Number(p.stock || 0);
+      row['حد التنبيه الأدنى'] = Number(p.minStock || 3);
+      row['نوع الصنف'] = p.isService ? 'خدمة' : 'منتج عادي';
+      row['ملاحظات'] = csvSafe(p.notes || '');
+      return row;
+    });
 
     const worksheet = XLSX.utils.json_to_sheet(rows);
 
     // ضبط عرض الأعمدة تلقائياً لسهولة القراءة
-    worksheet['!cols'] = [
+    const cols = [
       { wch: 18 }, // الباركود
       { wch: 20 }, // باركود المصنع
       { wch: 32 }, // اسم المنتج
       { wch: 18 }, // القسم
-      { wch: 10 }, // الوحدة
-      { wch: 14 }, // التكلفة
+      { wch: 10 }  // الوحدة
+    ];
+    if (canViewCost) {
+      cols.push({ wch: 14 }); // التكلفة
+    }
+    cols.push(
       { wch: 14 }, // البيع
       { wch: 15 }, // المخزون
       { wch: 16 }, // حد التنبيه
       { wch: 14 }, // نوع الصنف
       { wch: 25 }  // ملاحظات
-    ];
+    );
+    worksheet['!cols'] = cols;
 
     // اتجاه الورقة من اليمين لليسار (RTL)
     worksheet['!views'] = [{ rightToLeft: true }];

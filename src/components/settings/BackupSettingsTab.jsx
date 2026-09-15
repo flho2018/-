@@ -3,6 +3,7 @@ import { useApp } from '../../context/AppContext';
 import { Database, Save, CheckCircle, Download, Upload, Clock, RotateCcw, Cloud, Zap, Trash2, AlertTriangle, FileUp, Check, X, RefreshCw } from 'lucide-react';
 import { formatDate } from '../../utils/helpers';
 import { verifyPin } from '../../utils/security';
+import { idbGet, idbSet, safeLocalStorageSet, getStorageUsageEstimate } from '../../utils/idbStorage';
 
 export const BackupSettingsTab = () => {
   const { 
@@ -58,6 +59,17 @@ export const BackupSettingsTab = () => {
     }
   });
 
+  // استرجاع سجل اللقطات الكامل وسعة التخزين من IndexedDB
+  const [storageEstimate, setStorageEstimate] = useState(null);
+  useEffect(() => {
+    idbGet('naif_local_backups_list').then(idbList => {
+      if (Array.isArray(idbList) && idbList.length > 0) {
+        setLocalBackups(idbList);
+      }
+    });
+    getStorageUsageEstimate().then(est => setStorageEstimate(est));
+  }, [invoices.length, products.length]);
+
   // عداد الوقت التنازلي للنسخ التلقائي القادم
   const [secondsUntilNextBackup, setSecondsUntilNextBackup] = useState(null);
   const lastBackupTimestampRef = useRef(Date.now());
@@ -82,7 +94,7 @@ export const BackupSettingsTab = () => {
     };
   };
 
-  // أخذ لقطة سريعة وحفظها بالسجل ومحلياً
+  // أخذ لقطة سريعة وحفظها بالسجل وفي IndexedDB بسعة غير محدودة
   const takeSnapshot = (source = 'manual') => {
     const backupObj = generateFullBackupObject();
     const strData = JSON.stringify(backupObj);
@@ -101,22 +113,22 @@ export const BackupSettingsTab = () => {
 
     const updated = [newRecord, ...localBackups.slice(0, 14)];
     setLocalBackups(updated);
-    try {
-      // حفظ ملخص السجل لتجنب تجاوز حد localStorage
-      const summaryList = updated.map(u => ({
-        id: u.id,
-        date: u.date,
-        source: u.source,
-        size: u.size,
-        invoicesCount: u.invoicesCount,
-        productsCount: u.productsCount,
-        customersCount: u.customersCount
-      }));
-      localStorage.setItem('naif_local_backups_list', JSON.stringify(summaryList));
-      localStorage.setItem('naif_latest_snapshot_data', strData);
-    } catch (e) {
-      console.warn('LocalStorage full, kept summary only');
-    }
+
+    // 1. حفظ النسخة الاحتياطية كاملة في IndexedDB دون خطر تجاوز الحصة
+    idbSet('naif_latest_snapshot_data', strData);
+    idbSet('naif_local_backups_list', updated);
+
+    // 2. حفظ ملخص السجل في LocalStorage مع حماية من أخطاء الامتلاء
+    const summaryList = updated.map(u => ({
+      id: u.id,
+      date: u.date,
+      source: u.source,
+      size: u.size,
+      invoicesCount: u.invoicesCount,
+      productsCount: u.productsCount,
+      customersCount: u.customersCount
+    }));
+    safeLocalStorageSet('naif_local_backups_list', summaryList);
 
     lastBackupTimestampRef.current = Date.now();
     return backupObj;
@@ -238,6 +250,9 @@ export const BackupSettingsTab = () => {
     try {
       let dataToRestore = bkp.data;
       if (!dataToRestore) {
+        dataToRestore = await idbGet('naif_latest_snapshot_data');
+      }
+      if (!dataToRestore) {
         dataToRestore = localStorage.getItem('naif_latest_snapshot_data');
       }
       if (!dataToRestore) {
@@ -260,7 +275,12 @@ export const BackupSettingsTab = () => {
   const handleDeleteSnapshot = (id) => {
     const updated = localBackups.filter(b => b.id !== id);
     setLocalBackups(updated);
-    localStorage.setItem('naif_local_backups_list', JSON.stringify(updated));
+    idbSet('naif_local_backups_list', updated);
+    const summaryList = updated.map(u => ({
+      id: u.id, date: u.date, source: u.source, size: u.size,
+      invoicesCount: u.invoicesCount, productsCount: u.productsCount, customersCount: u.customersCount
+    }));
+    safeLocalStorageSet('naif_local_backups_list', summaryList);
   };
 
   // حفظ الجدولة
@@ -430,8 +450,8 @@ export const BackupSettingsTab = () => {
         </div>
       )}
 
-      {/* بطاقة حالة النسخ والمؤقت اللحظي */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      {/* بطاقة حالة النسخ والمؤقت اللحظي والتخزين عالي السعة */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
         <div className="p-4 bg-white rounded-3xl border border-pink-100 shadow-xs flex items-center gap-3">
           <div className="w-10 h-10 rounded-2xl bg-pink-50 text-pink-700 flex items-center justify-center font-black">
             <Cloud className="w-5 h-5" />
@@ -465,6 +485,22 @@ export const BackupSettingsTab = () => {
             <span className="text-[10px] text-slate-500 block font-bold">إجمالي السجلات المحمية:</span>
             <span className="font-black text-slate-900">
               {products.length} صنف • {invoices.length} فاتورة
+            </span>
+          </div>
+        </div>
+
+        <div className="p-4 bg-white rounded-3xl border border-pink-100 shadow-xs flex items-center gap-3">
+          <div className="w-10 h-10 rounded-2xl bg-purple-50 text-purple-700 flex items-center justify-center font-black">
+            <Database className="w-5 h-5" />
+          </div>
+          <div>
+            <span className="text-[10px] text-slate-500 block font-bold">التخزين المحلي (IndexedDB):</span>
+            <span className="font-black text-purple-900 flex items-center gap-1">
+              <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+              <span>سعة غير محدودة ✅</span>
+            </span>
+            <span className="text-[10px] text-slate-400 font-mono block">
+              {storageEstimate?.usageMB ? `مستخدم: ${storageEstimate.usageMB} MB` : 'مساحة وفيرة'}
             </span>
           </div>
         </div>

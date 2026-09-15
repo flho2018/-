@@ -17,6 +17,7 @@ import { getRoleByEmail } from '../utils/authUsers';
 import { playGentleNotificationSound } from '../utils/soundHelper';
 import { hashPin, verifyPin, hashNfcCard, verifyNfcCard, isHashedPin } from '../utils/security';
 import { logAudit as logAuditCloud } from '../utils/audit';
+import { idbGet, idbSet, safeLocalStorageSet, migrateLocalStorageToIndexedDB } from '../utils/idbStorage';
 
 const AppContext = createContext();
 
@@ -1132,6 +1133,31 @@ export const AppProvider = ({ children }) => {
   }, [firebaseUser]);
 
   // =========================================================================
+  //  التهيئة المتقدمة والترحيل إلى IndexedDB
+  // =========================================================================
+  useEffect(() => {
+    // ترحيل البيانات القديمة من localStorage لمرة واحدة تلقائياً
+    migrateLocalStorageToIndexedDB();
+
+    // فحص واسترجاع البيانات الضخمة من IndexedDB إذا كانت أحدث أو أكبر من localStorage
+    const hydrateLargeCollections = async () => {
+      try {
+        const idbInvoices = await idbGet('naif_pos_v3_invoices');
+        if (Array.isArray(idbInvoices) && idbInvoices.length > 0) {
+          setInvoices(prev => (idbInvoices.length > prev.length ? idbInvoices : prev));
+        }
+        const idbShifts = await idbGet('naif_pos_v3_shifts_history');
+        if (Array.isArray(idbShifts) && idbShifts.length > 0) {
+          setShiftsHistory(prev => (idbShifts.length > prev.length ? idbShifts : prev));
+        }
+      } catch (err) {
+        console.warn('[Storage] Hydration warning:', err?.message);
+      }
+    };
+    hydrateLargeCollections();
+  }, []);
+
+  // =========================================================================
   //  التعافي التلقائي من التأخّر (Self-Healing Sync)
   // =========================================================================
   //  متصفح ظل مفتوحاً في تبويب خلفي، أو انقطع عنه الإنترنت لحظة، قد يفوته
@@ -1179,16 +1205,18 @@ export const AppProvider = ({ children }) => {
     };
   }, [firebaseUser]);
 
-  // دالة الحفظ والمزامنة السحابية مع الحماية من التكرار ومعالجة أخطاء التخزين
+  // دالة الحفظ والمزامنة السحابية مع التخزين عالي السعة في IndexedDB والحماية من أخطاء التخزين
   const saveAndSync = (key, data, immediate = false) => {
     const now = Date.now();
-    try {
-      localStorage.setItem(`naif_pos_v3_${key}`, JSON.stringify(data));
-      localStorage.setItem(`naif_pos_v3_ts_${key}`, String(now));
-      localStorage.setItem('naif_pos_v3_initialized', 'true');
-    } catch (e) {
-      console.warn(`[Storage] Failed to save key ${key}:`, e?.message);
-    }
+    // 1. الحفظ الفوري في IndexedDB بسعة غير محدودة لكافة المصفوفات والبيانات
+    idbSet(`naif_pos_v3_${key}`, data);
+    idbSet(`naif_pos_v3_ts_${key}`, now);
+
+    // 2. محاولة الحفظ في LocalStorage كطبقة كاش متزامنة مع معالجة أخطاء الامتلاء
+    safeLocalStorageSet(`naif_pos_v3_${key}`, data);
+    safeLocalStorageSet(`naif_pos_v3_ts_${key}`, String(now));
+    safeLocalStorageSet('naif_pos_v3_initialized', 'true');
+
     if (isRemoteUpdateRef.current[key] && !immediate) {
       isRemoteUpdateRef.current[key] = false;
       return;
@@ -1204,10 +1232,19 @@ export const AppProvider = ({ children }) => {
   useEffect(() => { saveAndSync('customers', customers); }, [customers]);
   useEffect(() => { saveAndSync('suppliers', suppliers); }, [suppliers]);
   useEffect(() => { saveAndSync('users', users); }, [users]);
-  useEffect(() => { localStorage.setItem('naif_pos_v3_current_user', JSON.stringify(currentUser)); }, [currentUser]);
-  useEffect(() => { localStorage.setItem('naif_pos_v3_active_shift', JSON.stringify(activeShift)); }, [activeShift]);
+  useEffect(() => { 
+    idbSet('naif_pos_v3_current_user', currentUser);
+    safeLocalStorageSet('naif_pos_v3_current_user', currentUser); 
+  }, [currentUser]);
+  useEffect(() => { 
+    idbSet('naif_pos_v3_active_shift', activeShift);
+    safeLocalStorageSet('naif_pos_v3_active_shift', activeShift); 
+  }, [activeShift]);
   useEffect(() => { saveAndSync('user_shifts', userShifts); }, [userShifts]);
-  useEffect(() => { localStorage.setItem('naif_pos_v3_cart', JSON.stringify(cart)); }, [cart]);
+  useEffect(() => { 
+    idbSet('naif_pos_v3_cart', cart);
+    safeLocalStorageSet('naif_pos_v3_cart', cart); 
+  }, [cart]);
   useEffect(() => { saveAndSync('held_bills', heldBills); }, [heldBills]);
   useEffect(() => { saveAndSync('invoices', invoices); }, [invoices]);
   useEffect(() => { saveAndSync('purchases', purchases); }, [purchases]);

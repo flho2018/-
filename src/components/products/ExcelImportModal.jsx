@@ -18,6 +18,7 @@ export const ExcelImportModal = ({
   storeInfo
 }) => {
   const { currentUser } = useApp();
+  const canViewCost = checkUserPermission(currentUser, 'products_view_cost');
   const [file, setFile] = useState(null);
   const [isParsing, setIsParsing] = useState(false);
   const [parseResult, setParseResult] = useState(null);
@@ -368,7 +369,7 @@ export const ExcelImportModal = ({
                         <th className="p-2 border-b">الباركود</th>
                         <th className="p-2 border-b">اسم المنتج</th>
                         <th className="p-2 border-b">القسم</th>
-                        <th className="p-2 border-b text-center">التكلفة</th>
+                        {canViewCost && <th className="p-2 border-b text-center">التكلفة</th>}
                         <th className="p-2 border-b text-center">سعر البيع</th>
                         <th className="p-2 border-b text-center">الكمية</th>
                       </tr>
@@ -388,7 +389,7 @@ export const ExcelImportModal = ({
                           <td className="p-2 font-mono text-slate-600">{item.barcode}</td>
                           <td className="p-2 font-bold text-slate-900">{item.name}</td>
                           <td className="p-2 text-slate-600">{item.categoryName}</td>
-                          <td className="p-2 text-center font-mono">{item.costPrice.toFixed(2)}</td>
+                          {canViewCost && <td className="p-2 text-center font-mono">{item.costPrice.toFixed(2)}</td>}
                           <td className="p-2 text-center font-mono font-bold text-emerald-700">{item.sellingPrice.toFixed(2)}</td>
                           <td className="p-2 text-center font-bold">{item.isService ? 'خدمة' : item.stock}</td>
                         </tr>
