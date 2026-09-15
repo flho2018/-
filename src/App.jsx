@@ -9,11 +9,11 @@ import { Sidebar } from './components/common/Sidebar';
 import { BottomNav } from './components/common/BottomNav';
 import { FloatingBubbles } from './components/common/FloatingBubbles';
 
-import { Dashboard } from './components/dashboard/Dashboard';
 import { PosRegister } from './components/pos/PosRegister';
 import { VirtualKeyboardWrapper } from './components/common/VirtualKeyboardWrapper';
 
-// تحميل تدريجي ذكي للشاشات الثانوية لتسريع بدء تشغيل نقطة البيع
+// تحميل تدريجي ذكي للشاشات لتسريع بدء تشغيل نقطة البيع
+const Dashboard = React.lazy(() => import('./components/dashboard/Dashboard').then(m => ({ default: m.Dashboard })));
 const InvoicesScreen = React.lazy(() => import('./components/invoices/InvoicesScreen').then(m => ({ default: m.InvoicesScreen })));
 const ProductsScreen = React.lazy(() => import('./components/products/ProductsScreen').then(m => ({ default: m.ProductsScreen })));
 const CustomersScreen = React.lazy(() => import('./components/customers/CustomersScreen').then(m => ({ default: m.CustomersScreen })));
