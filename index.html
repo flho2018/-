@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl" class="h-full">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="/favicon.png?v=3.3" />
+    <link rel="shortcut icon" href="/favicon.ico?v=3.3" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=3.3" />
+    <link rel="manifest" href="/manifest.json?v=3.3" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#380624" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="بيت الورد" />
+    <meta name="application-name" content="بيت الورد" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    <title>بيت الورد - نقاط البيع والكاشير</title>
+    <!-- خطوط عربية واضحة واحترافية -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Alexandria:wght@400;600;700;900&family=Almarai:wght@400;700;800&family=Cairo:wght@400;500;600;700;800;900&family=Tajawal:wght@400;500;700;900&display=swap" rel="stylesheet">
+    <script>
+      // تفريغ وتحديث الـ Service Worker فوراً
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistrations().then(function(registrations) {
+          for (var reg of registrations) {
+            reg.update();
+          }
+        });
+      }
+    </script>
+    <script>
+      // تسجيل Service Worker للـ PWA وتثبيت الأيقونة على الجوال وسطح المكتب
+      // ملاحظة: لا نسجّله أثناء التطوير على localhost لأنه يخزّن نسخاً قديمة من
+      // ملفات البرنامج فتظهر أخطاء ورسائل تحديث بعد كل تعديل. يبقى فعّالاً على
+      // الموقع المنشور (Firebase Hosting) وعلى الجوال كما هو.
+      var isLocalDev = ['localhost', '127.0.0.1', '::1'].indexOf(location.hostname) !== -1;
+      if ('serviceWorker' in navigator && !isLocalDev) {
+        window.addEventListener('load', function() {
+          navigator.serviceWorker.register('/sw.js').then(function(reg) {
+            console.log('✅ ServiceWorker Registered successfully:', reg.scope);
+          }).catch(function(err) {
+            console.log('ServiceWorker Registration failed:', err);
+          });
+        });
+      } else if (isLocalDev && 'serviceWorker' in navigator) {
+        // تنظيف أي Service Worker مسجّل سابقاً على localhost حتى لا يخدم ملفات قديمة
+        navigator.serviceWorker.getRegistrations().then(function(regs) {
+          regs.forEach(function(reg) { reg.unregister(); });
+        });
+      }
+
+      // تسجيل الأخطاء في الكونسول فقط دون مسح واجهة التطبيق
+      window.addEventListener('error', function(e) {
+        console.warn('POS App Event Warning:', e.message || e);
+      });
+      window.addEventListener('unhandledrejection', function(e) {
+        console.warn('POS App Promise Warning:', e.reason);
+      });
+    </script>
+  </head>
+  <body class="bg-gradient-to-br from-pink-50 via-purple-50 to-rose-50 text-slate-800 font-cairo antialiased select-none overflow-hidden h-full overscroll-none">
+    <div id="root" class="h-full flex flex-col">
+      <div style="min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #fdf2f8; font-family: 'Cairo', sans-serif; direction: rtl; text-align: center; padding: 20px;">
+        <div style="width: 72px; height: 72px; border-radius: 50%; background: #fce7f3; display: flex; align-items: center; justify-content: center; font-size: 36px; margin-bottom: 16px;">🌸</div>
+        <h2 style="color: #be185d; font-size: 20px; font-weight: 900; margin-bottom: 8px;">بيت الورد للزهور والهدايا</h2>
+        <p style="color: #64748b; font-size: 13px; font-weight: bold;">جاري تجهيز نقاط البيع والكاشير...</p>
+      </div>
+    </div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

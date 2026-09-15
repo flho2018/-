@@ -1,0 +1,238 @@
+rules_version = '2';
+
+// =========================================================================
+//  قواعد أمان Firestore — بيت الورد   (نسخة محكَّمة)
+// =========================================================================
+//  الفرق عن النسخة السابقة: لم يعد يكفي أن تكون "موظفاً معتمداً" لتكتب
+//  ما تشاء. صار لكل مجموعة قيد على *ما الذي يُسمح بتغييره*، لأن منع
+//  الحذف وحده لا يفيد إن كان التعديل حراً: من يستطيع تعديل إجمالي
+//  فاتورة إلى صفر لا يحتاج إلى حذفها.
+//
+//  أسلوب الحماية المستخدم: تثبيت الحقول الحسّاسة (price, cost, total…)
+//  بدل تحديد قائمة الحقول المسموح تغييرها. السبب: محرّك المزامنة عندك
+//  يكتب المستند كاملاً في كل مرة، فقائمة "hasOnly" كانت ستكسر المزامنة،
+//  أما تثبيت الحقول فيمرّ ما دامت القيم الحسّاسة لم تتغيّر.
+//
+//  ⚠️ عند إضافة موظف: أنشئ حسابه في Firebase، أضف بريده في isStaff()
+//     وفي authUsers.js، ثم انشر القواعد من جديد.
+// =========================================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ------------------------------- أدوات -------------------------------
+
+    function email() {
+      return request.auth != null ? request.auth.token.email : '';
+    }
+
+    function isAdmin() {
+      return email() == 'fl.ho2018@gmail.com';
+    }
+
+    function isStaff() {
+      return email() in [
+        'fl.ho2018@gmail.com',
+        'f1@flower-house.com',
+        'f2@flower-house.com',
+        'f3@flower-house.com',
+        'f4@flower-house.com'
+      ];
+    }
+
+    // هل بقي الحقل كما هو؟ (يعتبر الحقل الغائب في الطرفين "لم يتغيّر")
+    function same(field) {
+      return !(field in request.resource.data) && !(field in resource.data)
+        || request.resource.data[field] == resource.data[field];
+    }
+
+    // =====================================================================
+    //  1. المنتجات والتصنيفات
+    // =====================================================================
+    //  الموظف يبيع فيَنقص المخزون — هذا كل ما يحتاجه. تغيير سعر البيع
+    //  أو سعر التكلفة قرار مالك، لا قرار كاشير.
+    //
+    //  حدّ لا تستطيع القواعد تجاوزه: Firestore لا يحمي على مستوى الحقل
+    //  عند *القراءة*. ما دام الموظف يقرأ المستند، فهو يقرأ cost معه من
+    //  أدوات المطور مهما أخفيته في الواجهة. إخفاء التكلفة فعلياً يتطلب
+    //  مجموعة عرض منفصلة بلا حقل التكلفة (المرحلة الثانية).
+    // =====================================================================
+    match /pos_products/{doc} {
+      allow read:   if isStaff();
+      allow create: if isStaff();
+      //  تصحيح: مستند المنتج يستخدم sellingPrice/costPrice (لا price/cost).
+      //  الأسماء القديمة كانت غائبة عن المستند فتمرّ same() دائماً — أي
+      //  أن حماية السعر/التكلفة كانت معطّلة. الآن الكاشير يعدّل الكمية
+      //  والاسم لكن لا يمسّ سعر البيع أو التكلفة أو الباركود.
+      allow update: if isAdmin()
+                    || (isStaff() && same('sellingPrice') && same('costPrice')
+                                  && same('barcode'));
+      allow delete: if isAdmin();
+    }
+
+    match /pos_categories/{doc} {
+      allow read:           if isStaff();
+      allow create, update: if isStaff();
+      allow delete:         if isAdmin();
+    }
+
+    // =====================================================================
+    //  2. الفواتير — تُرتجَع ولا تُعدَّل ولا تُحذَف
+    // =====================================================================
+    //  الإجمالي والأصناف وتاريخ الإصدار والكاشير المُصدِر: ثوابت.
+    //  المسموح تغييره: حالة السداد والمرتجع فقط.
+    // =====================================================================
+    match /pos_invoices/{doc} {
+      allow read:   if isStaff();
+      //  تحقق الإنشاء: إجمالي رقمي غير سالب — يمنع حقن فاتورة بإجمالي مشوّه.
+      allow create: if isStaff()
+                    && request.resource.data.total is number
+                    && request.resource.data.total >= 0;
+      allow update: if isAdmin()
+                    || (isStaff() && same('total') && same('subtotal')
+                                  && same('items') && same('createdAt')
+                                  && same('invoiceNumber') && same('cashierId'));
+      allow delete: if isAdmin();
+    }
+
+    // =====================================================================
+    //  3. العملاء والموردون والمشتريات
+    // =====================================================================
+    match /pos_customers/{doc} {
+      allow read:           if isStaff();
+      allow create, update: if isStaff();
+      allow delete:         if isAdmin();
+    }
+    match /pos_suppliers/{doc} {
+      allow read:           if isStaff();
+      allow create, update: if isStaff();
+      allow delete:         if isAdmin();
+    }
+    match /pos_purchases/{doc} {
+      allow read:   if isStaff();
+      allow create: if isStaff();
+      allow update: if isAdmin()
+                    || (isStaff() && same('total') && same('createdAt'));
+      allow delete: if isAdmin();
+    }
+
+    // =====================================================================
+    //  4. المصروفات والخزينة والورديات
+    // =====================================================================
+    //  مبلغ المصروف لا يُعدَّل بعد قيده — الخطأ يُصحَّح بقيد معاكس،
+    //  لا بإعادة كتابة التاريخ.
+    // =====================================================================
+    match /pos_expenses/{doc} {
+      allow read:   if isStaff();
+      allow create: if isStaff();
+      allow update: if isAdmin()
+                    || (isStaff() && same('amount') && same('createdAt'));
+      allow delete: if isAdmin();
+    }
+
+    match /pos_drawer_tx/{doc} {
+      allow read:   if isStaff();
+      allow create: if isStaff();
+      allow update: if isAdmin() || (isStaff() && same('amount') && same('createdAt'));
+      allow delete: if isAdmin();
+    }
+
+    match /pos_receipts/{doc} {
+      allow read:   if isStaff();
+      allow create: if isStaff();
+      allow update: if isAdmin() || (isStaff() && same('amount') && same('createdAt'));
+      allow delete: if isAdmin();
+    }
+
+    match /pos_held_bills/{doc} {
+      allow read, create, update, delete: if isStaff();   // مؤقتة بطبيعتها
+    }
+
+    match /pos_user_shifts/{doc} {
+      allow read:           if isStaff();
+      allow create, update: if isStaff();
+      allow delete:         if isAdmin();
+    }
+
+    //  الوردية المغلقة مُقفلة: لا يعدّلها إلا المدير.
+    //  هذا يسدّ باب تغطية عجز بأثر رجعي من سجل الورديات.
+    //  ⚠️ إن كان اسم الحقل عندك غير 'status' أو القيمة غير 'closed'،
+    //     صحّحه هنا وإلا ستُرفض التعديلات المشروعة.
+    match /pos_shifts_history/{doc} {
+      allow read:   if isStaff();
+      allow create: if isStaff();
+      allow update: if isAdmin()
+                    || (isStaff() && resource.data.get('status', '') != 'closed');
+      allow delete: if isAdmin();
+    }
+
+    match /pos_treasury_ledger/{doc} {
+      allow read:   if isStaff();
+      allow create: if isStaff();
+      allow update: if isAdmin();          // دفتر الخزينة: قيوده لا تُعدَّل
+      allow delete: if isAdmin();
+    }
+
+    // =====================================================================
+    //  5. المستخدمون والصلاحيات — للمدير وحده
+    // =====================================================================
+    match /pos_users/{doc} {
+      allow read:  if isStaff();
+      allow write: if isAdmin();
+    }
+
+    // =====================================================================
+    //  6. الإعدادات
+    // =====================================================================
+    match /pos_meta/{doc} {
+      allow read:  if isStaff();
+      //  active_shift + latest_activity يكتبهما كل جهاز أثناء عمله.
+      //  store_info و reset_marks للمدير وحده.
+      allow write: if isAdmin()
+                   || (isStaff() && doc in ['active_shift', 'latest_activity']);
+    }
+
+    // =====================================================================
+    //  7. سجل التدقيق — إضافة فقط، والهوية من الخادم لا من البرنامج
+    // =====================================================================
+    //  بدون شرط userEmail كان أي موظف يكتب قيداً باسم زميله. الآن
+    //  الخادم يرفض أي قيد لا يحمل بريد كاتبه الحقيقي.
+    //  ⚠️ يجب أن يرسل البرنامج الحقلين: userEmail و at (بـ serverTimestamp)
+    // =====================================================================
+    match /pos_audit_logs/{doc} {
+      allow read:   if isAdmin();
+      allow create: if isStaff()
+                    && request.resource.data.userEmail == email()
+                    && request.resource.data.at == request.time;
+      allow update, delete: if false;
+    }
+
+    //  سجل الدخول يكتبه محرّك المزامنة دفعةً واحدة بلا حقل بريد،
+    //  ولأن الدفعة تُعاد بعد كل تحديث للصفحة فقد سُمح بالكتابة فوقه.
+    //  أضعف من سجل التدقيق عمداً — وهو مقبول لأن قيمته أقل بكثير:
+    //  سجل دخول لا يُخرج نقداً من الدرج. الحذف ممنوع في الحالتين.
+    match /pos_login_logs/{doc} {
+      allow read:           if isAdmin();
+      allow create, update: if isStaff();
+      allow delete:         if false;
+    }
+
+    // =====================================================================
+    //  8. النسخ الاحتياطية — للمدير وحده
+    // =====================================================================
+    match /pos_backups/{doc} {
+      allow read, write: if isAdmin();
+    }
+
+    // =====================================================================
+    //  9. كل ما عدا ذلك
+    // =====================================================================
+    //  ملاحظة للأمانة: هذه الكتلة تجميلية. في Firestore تُجمَع الأذونات
+    //  اتحاداً، فالرفض هنا لا يُبطل سماحاً أعلاه — والمجموعات غير
+    //  المذكورة مرفوضة أصلاً بشكل افتراضي. أُبقيت للتوثيق فقط.
+    // =====================================================================
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

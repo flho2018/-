@@ -1,0 +1,4 @@
+- [مشروع بيت الورد (POS)](flower-house-pos-project.md) — نظام كاشير عربي في D:\FL-HO2018، ومرجعه الكامل CLAUDE.md داخل المشروع
+- [npm عبر PowerShell](flower-house-npm-powershell.md) — السياسة تمنع npm.ps1، استعمل npm.cmd و npx.cmd
+- [استضافة Firebase](flower-house-firebase-hosting.md) — مشروع flower-house-8888d وروابط النشر
+- [تسجيل الدخول يوقف التحقّق](flower-house-login-blocks-verification.md) — ما أستطيع اختباره وحدي وما يحتاج المستخدم

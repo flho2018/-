@@ -1,0 +1,45 @@
+{
+  "name": "naif-pos-mobile",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "package": "node ./zip_project.cjs",
+    "preview": "vite preview",
+    "test": "node tests/financial_calculations.test.cjs && node tests/staff_performance.test.mjs",
+    "test:staff": "node tests/staff_performance.test.mjs",
+    "emu": "firebase emulators:start --only firestore,auth",
+    "test:rules": "firebase emulators:exec --only firestore \"node tests/firestore.rules.test.cjs\""
+  },
+  "dependencies": {
+    "clsx": "^2.1.1",
+    "firebase": "^12.18.0",
+    "html2canvas": "^1.4.1",
+    "html5-qrcode": "^2.3.8",
+    "jsbarcode": "^3.12.3",
+    "lucide-react": "^0.475.0",
+    "qrcode": "^1.5.4",
+    "qz-tray": "^2.3.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-simple-keyboard": "^3.8.270",
+    "simple-keyboard": "^3.8.187",
+    "tailwind-merge": "^2.6.0",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.2",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "firebase-tools": "^15.30.0",
+    "postcss": "^8.5.2",
+    "sharp": "^0.35.4",
+    "tailwindcss": "^3.4.17",
+    "vite": "^5.4.14",
+    "vite-plugin-pwa": "^1.3.0"
+  }
+}
