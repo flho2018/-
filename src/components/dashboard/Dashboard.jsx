@@ -3,7 +3,12 @@ import { useApp } from '../../context/AppContext';
 import { ShoppingCart, Receipt, Package, Users, Truck, DollarSign, Layers, PieChart, Settings, AlertTriangle, ArrowUpRight, Store, Clock, Award, Smartphone } from 'lucide-react';
 import { formatMoney } from '../../utils/helpers';
 import { checkUserPermission } from '../../utils/permissions';
-import { isToday, classifyInvoicePayments, useActiveShifts } from '../../utils/useShiftMetrics';
+import {
+  isToday, classifyInvoicePayments, useActiveShifts,
+  filterInvoicesByShift, filterDrawerTxByShift, calculateShiftCashRefunds,
+  computeExpectedCash, sumDrawerCashIn, sumDrawerCashOut
+} from '../../utils/useShiftMetrics';
+import { resolveUserName } from '../../utils/helpers';
 
 export const Dashboard = ({ setCurrentTab }) => {
   const { 
@@ -13,6 +18,8 @@ export const Dashboard = ({ setCurrentTab }) => {
     customers, 
     activeShift, 
     expenses,
+    purchases,
+    drawerTransactions,
     heldBills,
     userShifts,
     users,
@@ -65,42 +72,89 @@ export const Dashboard = ({ setCurrentTab }) => {
 
   // حساب نقدية الخزينة المتوقعة (← useActiveShifts مستوردة من useShiftMetrics)
   const allOpenShifts = useActiveShifts(userShifts, users);
-  // وردية المستخدم الحالي فقط — لا نتبنّى وردية كاشير آخر كأنها ورديتنا
-  const effectiveShift = (activeShift?.isOpen &&
-    (!currentUser?.id || !activeShift.userId || activeShift.userId === currentUser.id))
-    ? activeShift
-    : activeShift;
+  // =======================================================================
+  //  وردية المستخدم الحالي فقط — لا نتبنّى وردية كاشير آخر كأنها ورديتنا
+  // =======================================================================
+  //  كان الشرط مكتوباً هنا بفرعين **متطابقين**:
+  //      ? activeShift : activeShift
+  //  أي أنه بلا أي أثر، والتعليق يَعِد بما لا يفعله الكود. فكانت الشاشة
+  //  الرئيسية تعرض وردية كاشير آخر ونقديته وكأنها وردية من ينظر للشاشة.
+  //  (نفس المنطق مكتوب صحيحاً في Header.jsx — مرة صحيحة ومرة معطوبة.)
+  //  الآن: نقرأ وردية المستخدم من خريطة الورديات أولاً، ولا نقبل
+  //  activeShift إلا إن كانت له فعلاً. وإلا فلا وردية — وهذا أصدق من رقم
+  //  يخصّ غيره.
+  // =======================================================================
+  const myShift = (userShifts && currentUser?.id) ? userShifts[currentUser.id] : null;
+  const effectiveShift =
+    (myShift && myShift.isOpen === true && myShift.status !== 'closed' && !myShift.closedAt)
+      ? myShift
+      : (activeShift?.isOpen && (!currentUser?.id || !activeShift.userId || activeShift.userId === currentUser.id)
+          ? activeShift
+          : null);
 
   const startCashEffective = effectiveShift?.startCash 
     ? Number(effectiveShift.startCash) 
     : (allOpenShifts.reduce((s, sh) => s + (Number(sh.startCash) || 0), 0) || 0);
 
-  // حساب مبيعات النقد الخاصة بالوردية الحالية النشطة حصراً لمنع خلط الورديات السابقة
-  const shiftCashSales = useMemo(() => {
-    if (!effectiveShift?.isOpen || !effectiveShift?.openedAt) return 0;
-    const shiftOpenTime = new Date(effectiveShift.openedAt).getTime();
-    return (todayInvoices || []).reduce((sum, inv) => {
-      const invTime = new Date(inv.date || 0).getTime();
-      if (invTime < shiftOpenTime) return sum;
-      if (inv.shiftId && inv.shiftId !== effectiveShift.id) return sum;
+  // =========================================================================
+  //  نقدية الدرج — من نفس المصدر الذي تستعمله شاشة الدرج وتقرير Z
+  // =========================================================================
+  //  ما كان هنا: صيغة **سادسة** مستقلّة تحسب مبيعات النقد بنفسها ثم:
+  //      startCash + shiftCashSales + shift.cashIn − shift.cashOut
+  //  **بلا خصم المصروفات ولا المشتريات** — بينما شاشة الدرج تخصمهما. فالمالك
+  //  يرى رقمين مختلفين لنفس الدرج في شاشتين، ولا يعرف أيّهما يصدّق. وهذا
+  //  أسوأ من رقم خاطئ معروف.
+  //
+  //  ولها عيب ثانٍ: كانت تقرأ `shift.cashIn` و `shift.cashOut` — وهي عدّادات
+  //  تراكمية تُزامَن كقيم مطلقة، فتحرير الوردية من جهازين يُضيع فرق أحدهما.
+  //  إعادة الحساب من السجلات الأصلية (الفواتير والحركات والمصروفات
+  //  والمشتريات) تُخرج الرقم من دائرة ذلك السباق أصلاً.
+  // =========================================================================
+  const drawerCash = useMemo(() => {
+    if (!effectiveShift?.isOpen) {
+      // وردية مغلقة: لا درج مفتوح يُعرض رقمه — العهدة وحدها إن وُجدت
+      return startCashEffective;
+    }
+    const uid = effectiveShift.userId || currentUser?.id;
+    const uname = resolveUserName(effectiveShift, users) || currentUser?.name || '';
 
-      const pMethod = String(inv.paymentMethod || inv.paymentMethodType || '').toLowerCase();
-      if (pMethod === 'cash' || pMethod === 'نقدي' || pMethod === 'نقد') {
-        return sum + (Number(inv.grandTotal ?? inv.finalTotal ?? inv.total) || 0);
-      } else if (pMethod === 'split' || (inv.splitPayments && inv.splitPayments.length > 0)) {
-        if (inv.splitPayments && Array.isArray(inv.splitPayments)) {
-          const cashPart = inv.splitPayments.filter(sp => sp.methodType === 'cash' || sp.methodId === 'cash').reduce((s, sp) => s + (Number(sp.amount) || 0), 0);
-          return sum + cashPart;
-        }
-        return sum + (Number(inv.splitCash ?? inv.splitDetails?.cash) || 0);
-      }
-      return sum;
-    }, 0);
-  }, [todayInvoices, effectiveShift]);
+    const shiftInvoices = filterInvoicesByShift(invoices, effectiveShift, uid, uname);
+    const { cashSales } = classifyInvoicePayments(shiftInvoices, storeInfo?.paymentMethods);
+    const shiftTx = filterDrawerTxByShift(drawerTransactions, effectiveShift, uid, uname);
+    const openedAt = new Date(effectiveShift.openedAt || 0).getTime();
 
-  const cashInDrawer = effectiveShift?.isOpen
-    ? startCashEffective + shiftCashSales + (Number(effectiveShift?.cashIn) || 0) - (Number(effectiveShift?.cashOut) || 0)
-    : startCashEffective + todayCashSales;
+    const belongsToShift = (rec, isCashOnly) => {
+      if (!rec?.date) return false;
+      if (rec.shiftId && effectiveShift.id) return rec.shiftId === effectiveShift.id;
+      const t = new Date(rec.date).getTime();
+      const mine = (rec.userId && rec.userId === uid) || rec.user === uname;
+      return t >= openedAt && mine;
+    };
+
+    const cashExpenses = (expenses || [])
+      .filter(e => !e.isIncome && e.paymentMethod === 'cash'
+                && (e.paymentSource === 'drawer' || !e.paymentSource)
+                && belongsToShift(e))
+      .reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
+
+    const cashPurchases = (purchases || [])
+      .filter(p => (!p.paymentMethod || p.paymentMethod === 'cash')
+                && (p.paymentSource === 'drawer' || !p.paymentSource)
+                && belongsToShift(p))
+      .reduce((sum, p) => sum + (Number(p.paidAmount ?? p.totalAmount ?? p.total ?? p.amount) || 0), 0);
+
+    return computeExpectedCash({
+      startCash: startCashEffective,
+      cashSales,
+      cashRefunds: calculateShiftCashRefunds(invoices, effectiveShift, uid, uname),
+      cashIn: sumDrawerCashIn(shiftTx),
+      cashOut: sumDrawerCashOut(shiftTx),
+      cashExpenses,
+      cashPurchases
+    });
+  }, [effectiveShift, startCashEffective, invoices, drawerTransactions, expenses, purchases, users, currentUser, storeInfo]);
+
+  const cashInDrawer = drawerCash;
 
   // المنتجات المنخفضة في المخزون
   const lowStockProducts = (products || []).filter(p => !p?.isArchived && Number(p.stock) <= Number(p.minStock || 0));

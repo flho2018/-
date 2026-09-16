@@ -25,6 +25,8 @@ export const SettingsScreen = () => {
   const canPayMethods  = checkUserPermission(currentUser, 'settings_payment_methods');
   const canPrintersWa  = checkUserPermission(currentUser, 'settings_printers_whatsapp');
   const canCloudBackup = checkUserPermission(currentUser, 'settings_cloud_sync_backup');
+  // شاشة التصفير لها مفتاحها الخاص: حفظ البيانات وإتلافها ليسا صلاحية واحدة
+  const canResetAccounts = checkUserPermission(currentUser, 'settings_reset_accounts');
   const canTerminal    = checkUserPermission(currentUser, 'settings_terminal_nami');
 
   const [activeTab, setActiveTab] = useState('general');
@@ -513,7 +515,7 @@ export const SettingsScreen = () => {
     ...(canPrintersWa  ? [{ id: 'whatsapp', label: 'الوتساب', icon: MessageCircle, color: 'text-emerald-600' }] : []),
     ...(canPayMethods  ? [{ id: 'payments', label: 'طرق الدفع', icon: CreditCard, color: 'text-purple-600' }] : []),
     ...(canManageUsers ? [{ id: 'users', label: 'المستخدمين', icon: Users, color: 'text-indigo-600' }] : []),
-    ...(canCloudBackup ? [{ id: 'reset', label: 'تصفير', icon: RotateCcw, color: 'text-rose-600' }] : []),
+    ...(canResetAccounts ? [{ id: 'reset', label: 'تصفير', icon: RotateCcw, color: 'text-rose-600' }] : []),
     ...(canTerminal    ? [{ id: 'terminal', label: 'اجهزة الدفع', icon: Smartphone, color: 'text-emerald-600' }] : []),
     ...(canPrintersWa  ? [{ id: 'invoice', label: 'الفاتورة', icon: Printer, color: 'text-blue-600' }] : []),
     ...(canPrintersWa  ? [{ id: 'barcode', label: 'الباركود', icon: Barcode, color: 'text-indigo-600' }] : []),
@@ -2456,7 +2458,9 @@ export const SettingsScreen = () => {
                         titleAr: formData.invoicePrintSettings?.invoiceTitleAr || 'فاتورة تجريبية',
                         titleEn: formData.invoicePrintSettings?.invoiceTitleEn || 'Test Invoice'
                       });
-                      printHtmlDirectly(html, 'فاتورة_اختبار');
+                      // التوجيه من formData لا storeInfo: هذه طباعة اختبارية لإعدادات قيد التعديل
+                      // ولم تُحفظ بعد، فيجب أن تذهب للطابعة التي يجرّبها المستخدم الآن.
+                      printHtmlDirectly(html, 'فاتورة_اختبار', { purpose: 'invoice', storeInfo: formData });
                     } catch(e) {
                       console.error("Print failed:", e);
                       alert("عذراً، حدث خطأ أثناء محاولة طباعة الفاتورة التجريبية. يرجى التحقق من الإعدادات.");

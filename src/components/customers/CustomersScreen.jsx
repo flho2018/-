@@ -150,7 +150,7 @@ export const CustomersScreen = () => {
         </div>
       </div>
     `;
-    printHtmlDirectly(html, `سند_قبض_${receiptData.receiptNumber || 'عميل'}`);
+    printHtmlDirectly(html, `سند_قبض_${receiptData.receiptNumber || 'عميل'}`, { purpose: 'invoice', storeInfo });
   };
 
   const handleShareReceiptWhatsApp = (receiptData) => {
@@ -372,7 +372,7 @@ export const CustomersScreen = () => {
         </div>
       </div>
     `;
-    printHtmlDirectly(html, `كشف_حساب_${selectedForStatement.name}`);
+    printHtmlDirectly(html, `كشف_حساب_${selectedForStatement.name}`, { purpose: 'report', storeInfo });
   };
 
   const handleShareStatementWhatsApp = () => {

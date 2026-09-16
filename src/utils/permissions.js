@@ -108,7 +108,11 @@ export const PERMISSION_CATEGORIES = [
       { key: 'settings_terminal_nami', label: 'إعدادات ربط جهاز الدفع نامي (ECR/USB)', desc: 'برمجة منافذ الاتصال لجهاز نقاط البيع' },
       { key: 'settings_printers_whatsapp', label: 'ضبط إعدادات الطابعة والواتساب والمظهر', desc: 'تخصيص مقاس الورق ونصوص رسائل الواتساب' },
       { key: 'settings_manage_users', label: 'إدارة المستخدمين والصلاحيات والـ PIN', desc: 'إنشاء كاشيرات ومدراء وتحديد صلاحيات كل موظف' },
-      { key: 'settings_cloud_sync_backup', label: 'المزامنة السحابية والنسخ الاحتياطي', desc: 'سحب ورفع البيانات والنسخ التلقائي' }
+      { key: 'settings_cloud_sync_backup', label: 'المزامنة السحابية والنسخ الاحتياطي', desc: 'سحب ورفع البيانات والنسخ التلقائي' },
+      // مفتاح مستقلّ لأخطر شاشة في النظام. كانت شاشة التصفير تُفتح بصلاحية
+      // «النسخ الاحتياطي» — أي أن من يُؤتمن على أخذ نسخة كان يُؤتمن على
+      // محو كل شيء. حفظ البيانات وإتلافها ليسا صلاحية واحدة.
+      { key: 'settings_reset_accounts', label: '⛔ تصفير الحسابات والبيانات', desc: 'محو الفواتير والأرصدة والورديات — لا يُمنح إلا للمالك' }
     ]
   }
 ];
@@ -181,7 +185,8 @@ export const ROLE_PRESETS = [
       settings_terminal_nami: false,
       settings_printers_whatsapp: false,
       settings_manage_users: false,
-      settings_cloud_sync_backup: false
+      settings_cloud_sync_backup: false,
+      settings_reset_accounts: false
     }
   },
   {
@@ -237,7 +242,8 @@ export const ROLE_PRESETS = [
       settings_terminal_nami: false,
       settings_printers_whatsapp: false,
       settings_manage_users: false,
-      settings_cloud_sync_backup: false
+      settings_cloud_sync_backup: false,
+      settings_reset_accounts: false
     }
   },
   {
@@ -293,7 +299,8 @@ export const ROLE_PRESETS = [
       settings_terminal_nami: false,
       settings_printers_whatsapp: false,
       settings_manage_users: false,
-      settings_cloud_sync_backup: true
+      settings_cloud_sync_backup: true,
+      settings_reset_accounts: false
     }
   }
 ];
@@ -327,11 +334,24 @@ export const checkUserPermission = (user, permissionKey, options = {}) => {
   const allowed = (() => {
     if (!user) return false;
     if (user.role === 'admin' || user.role === 'مدير النظام' || user.isAdmin) return true;
-    if (user.permissions && typeof user.permissions === 'object') {
-      return !!user.permissions[permissionKey];
-    }
-    // في حال عدم وجود كائن الصلاحيات للمستخدم العادي، نرجع لصلاحيات دوره الافتراضي لحماية النظام
+    // =====================================================================
+    //  المفتاح غير الموجود في بطاقة المستخدم يرجع لقالب دوره
+    // =====================================================================
+    //  كان الفحص `!!user.permissions[key]` فور وجود كائن الصلاحيات. وبما أن
+    //  الكائن **لقطة جامدة** تُحفظ يوم إنشاء المستخدم، فأي صلاحية تُضاف
+    //  للنظام لاحقاً تكون غائبة عن بطاقات كل الموظفين الحاليين فتُمنع عنهم
+    //  **صامتة** — ميزة جديدة لا تعمل لأحد ولا رسالة تشرح لماذا، حتى
+    //  يُعاد حفظ كل بطاقة يدوياً.
+    //  الآن: المفتاح الموجود في البطاقة يُحترم كما هو (بما فيه المنع
+    //  الصريح `false`)، والمفتاح **الغائب وحده** يرجع لقالب الدور.
+    // =====================================================================
     const preset = ROLE_PRESETS.find(r => r.id === user.role);
+    if (user.permissions && typeof user.permissions === 'object') {
+      if (permissionKey in user.permissions) return !!user.permissions[permissionKey];
+      if (preset && preset.permissions) return !!preset.permissions[permissionKey];
+      return false;
+    }
+    // لا كائن صلاحيات إطلاقاً: قالب الدور يحمي النظام
     if (preset && preset.permissions) {
       return !!preset.permissions[permissionKey];
     }
@@ -406,8 +426,18 @@ export const canAccessModule = (user, moduleKey) => {
   if (!user) return false;
   if (user.role === 'admin' || user.role === 'مدير النظام' || user.isAdmin) return true;
 
-  // مفتاح غير معروف: نسمح به بدل أن نخفي شاشة بلا سبب
-  if (!(moduleKey in MODULE_PERMISSION_MAP)) return true;
+  // =======================================================================
+  //  الشاشة غير المسجّلة في الخريطة: تُمنع لا تُفتح
+  // =======================================================================
+  //  كان الافتراض «نسمح بدل أن نخفي شاشة بلا سبب». عملياً هذا يعني أن أي
+  //  شاشة جديدة تُضاف وينسى كاتبها تسجيلها هنا تنفتح **للجميع** — والنسيان
+  //  هو الحالة الغالبة. الافتراض الآمن في نظام فيه نقد ومخزون هو المنع:
+  //  شاشة محجوبة تُكتشف في دقيقة، وشاشة مفتوحة للجميع قد لا تُكتشف أبداً.
+  // =======================================================================
+  if (!(moduleKey in MODULE_PERMISSION_MAP)) {
+    console.warn('[Permissions] شاشة غير مسجّلة في MODULE_PERMISSION_MAP — مُنعت افتراضياً:', moduleKey);
+    return false;
+  }
 
   const required = MODULE_PERMISSION_MAP[moduleKey];
   if (!required) return true;   // شاشة لا تحتاج صلاحية خاصة
@@ -420,6 +450,7 @@ export const canAccessModule = (user, moduleKey) => {
       'settings_payment_methods',
       'settings_printers_whatsapp',
       'settings_cloud_sync_backup',
+      'settings_reset_accounts',
       'settings_terminal_nami'
     ].some(k => checkUserPermission(user, k));
   }

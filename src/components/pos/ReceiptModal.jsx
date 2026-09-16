@@ -105,10 +105,13 @@ export const ReceiptModal = ({ isOpen, onClose, invoice, onNewSale }) => {
         users
       });
 
-      printHtmlDirectly(receiptHtml, `فاتورة_${invoice.invoiceNumber}`);
+      printHtmlDirectly(receiptHtml, `فاتورة_${invoice.invoiceNumber}`, { purpose: 'invoice', storeInfo });
     } catch (err) {
       console.error('Print Execution Error:', err);
-      window.print();
+      // `window.print()` حُذف من هنا: كان «احتياطاً» يطبع **الصفحة كلها** لا
+      // المستند — فيُهدر ورقاً حرارياً ويُخرج شيئاً لا يشبه الإيصال. وهو كود
+      // ميت أصلاً: دوال الطباعة غير متزامنة ولا ترفض، فهذا الـ catch لا يعمل.
+      // الإعلان عن الفشل صار من `printHtmlDirectly` نفسها (نقطة الطباعة الوحيدة).
     }
   };
 

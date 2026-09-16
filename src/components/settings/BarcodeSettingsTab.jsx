@@ -77,7 +77,10 @@ export const BarcodeSettingsTab = () => {
     dpi: '203',
     paperType: 'single_roll',
     a4Columns: 3,
-    a4Rows: 8
+    a4Rows: 8,
+    // TSPL معطّل افتراضياً: يحتاج QZ Tray مثبَّتاً وطابعة ملصقات تفهم
+    // اللغة، ولا يدعم الحروف العربية. تشغيله قرار واعٍ لا افتراض.
+    useTspl: false
   };
 
   const [settings, setSettings] = useState({
@@ -133,7 +136,7 @@ export const BarcodeSettingsTab = () => {
     }
   };
 
-  const handlePrintTest = () => {
+  const handlePrintTest = async () => {
     const sampleProduct = products && products.length > 0 
       ? products[0] 
       : {
@@ -142,8 +145,12 @@ export const BarcodeSettingsTab = () => {
           barcode: '628100123456'
         };
 
+    // `await` ضروري بعد أن صارت الدالة غير متزامنة (مسار TSPL): try/catch
+    // حول استدعاء بلا await لا يلتقط رفض الوعد. و `barcodeLabelSettings`
+    // تُمرَّر من `settings` المحلية لا من المحفوظ، لأن هذه طباعة اختبارية
+    // لإعدادات قيد التعديل — ومنها مفتاح TSPL نفسه.
     try {
-      printThermalBarcodeLabels({
+      await printThermalBarcodeLabels({
         product: sampleProduct,
         copies: 1,
         size: settings.preset || settings.labelSize || '50x25',
@@ -154,7 +161,7 @@ export const BarcodeSettingsTab = () => {
       });
     } catch (err) {
       console.error('Test Print Error:', err);
-      window.print();
+      alert('تعذّرت الطباعة التجريبية: ' + (err?.message || 'خطأ غير معروف'));
     }
   };
 
@@ -304,6 +311,45 @@ export const BarcodeSettingsTab = () => {
               <Barcode className="w-4 h-4 text-indigo-600" />
               <span>2. نوع التشفير والشفرة (Symbology):</span>
             </h4>
+
+            {/* =============================================================
+                 مفتاح TSPL — الطباعة الخام بلغة الطابعة
+                 =============================================================
+                 HTML يطبع «صفحة» لا «ملصقاً»: هوامش يفرضها المتصفّح، وتحجيم
+                 يختلف بين جهاز وآخر، وباركود يُرسم صورةً فتتغيّر سماكة خطوطه
+                 مع الدقّة فيصعب مسحه. TSPL يعطي الطابعة المقاس بالملّيمتر
+                 ويولّد الباركود بخطوطها — ملصق يُمسح دائماً بمقاس مضبوط.
+                 ============================================================= */}
+            <div className={`rounded-2xl border p-3 space-y-2 ${settings.useTspl ? 'bg-emerald-50 border-emerald-200' : 'bg-slate-50 border-slate-200'}`}>
+              <label className="flex items-start gap-2.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={Boolean(settings.useTspl)}
+                  onChange={e => handleUpdate('useTspl', e.target.checked)}
+                  className="mt-0.5 w-4 h-4 accent-emerald-600 shrink-0"
+                />
+                <span>
+                  <span className="font-black text-slate-900 block">
+                    🖨️ طباعة خام بلغة الطابعة (TSPL) — للمقاس المضبوط بالملّيمتر
+                  </span>
+                  <span className="text-[11px] text-slate-600 leading-relaxed block mt-1">
+                    يُرسل الملصق أوامرَ مباشرةً لطابعة الملصقات بدل صفحة HTML، فيخرج
+                    بالمقاس المكتوب أعلاه بالضبط ويُمسح الباركود دائماً.
+                  </span>
+                </span>
+              </label>
+
+              <div className="text-[11px] leading-relaxed bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 text-amber-900 font-bold">
+                ⚠️ يتطلّب: <b>QZ Tray مثبَّتاً ومفعَّلاً</b> من تبويب الطابعات، وطابعة ملصقات
+                تفهم TSPL (TSC / Xprinter / Godex وما يوافقها).
+                <br />
+                ⛔ <b>لا يدعم الحروف العربية</b> — خطوط الطابعة الداخلية بلا محارف عربية.
+                فاسم المتجر واسم المنتج يُطبعان فقط إن كانا بحروف لاتينية، وإلا يُحذفان من
+                الملصق (بدل طباعة رموز مشوّهة). الباركود والسعر يُطبعان دائماً.
+                <br />
+                ✅ إن تعذّر TSPL لأي سبب يرجع البرنامج للطباعة العادية تلقائياً ولا يتعطّل.
+              </div>
+            </div>
 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
               <div>

@@ -30,7 +30,8 @@ export const ManagerTreasuryTab = ({ treasurySummary, isAdmin }) => {
     cancelPendingFloat,
     allPendingFloats,
     allPendingFloatsTotal,
-    storeInfo
+    storeInfo,
+    computeOpenShiftCash
   } = useApp();
 
   const [isBankDepositOpen, setIsBankDepositOpen] = useState(false);
@@ -385,7 +386,7 @@ export const ManagerTreasuryTab = ({ treasurySummary, isAdmin }) => {
         </div>
       </div>
     `;
-    printHtmlDirectly(printContent);
+    printHtmlDirectly(printContent, 'تقرير_الخزينة', { purpose: 'report', storeInfo });
   };
 
   return (
@@ -1577,8 +1578,12 @@ export const ManagerTreasuryTab = ({ treasurySummary, isAdmin }) => {
                   {fundTargets.map(c => (
                     <option key={c.id} value={c.id}>
                       {c.isOpen
+                        // الرقم من `computeOpenShiftCash` المشتركة لا من عدّادات
+                        // الوردية: العدّادات تُزامَن كقيم مطلقة فتتسابق بين
+                        // الأجهزة، وإعادة الحساب من السجلات تُطابق ما يراه
+                        // الكاشير في درجه بالضبط — لا رقماً ثالثاً.
                         ? `${c.name} — وردية مفتوحة، درج حالي: ${formatMoney(
-                            Math.max(0, (Number(c.shift.startCash) || 0) + (Number(c.shift.cashSales) || 0) + (Number(c.shift.cashIn) || 0) - (Number(c.shift.cashOut) || 0)),
+                            Math.max(0, computeOpenShiftCash(c.shift)),
                             storeInfo?.currency || 'ر.س'
                           )}`
                         : `${c.name} — لا وردية مفتوحة (تُسجَّل كعهدة)`}

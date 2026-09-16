@@ -8,7 +8,7 @@ import { UserSwitchModal } from '../auth/UserSwitchModal';
 import { TreasuryDropModal } from './TreasuryDropModal';
 import { DEFAULT_PAYMENT_ICONS } from '../../utils/paymentIcons';
 
-import { classifyInvoicePayments, filterInvoicesByShift, filterDrawerTxByShift, calculateShiftCashRefunds, useActiveShifts } from '../../utils/useShiftMetrics';
+import { classifyInvoicePayments, filterInvoicesByShift, filterDrawerTxByShift, calculateShiftCashRefunds, useActiveShifts, computeExpectedCash, sumDrawerCashIn, sumDrawerCashOut } from '../../utils/useShiftMetrics';
 
 export const ShiftHeaderModal = ({ isOpen, onClose }) => {
   const {
@@ -70,8 +70,8 @@ export const ShiftHeaderModal = ({ isOpen, onClose }) => {
 
     // نفس القاعدة في closeShift وشاشة الدرج: حركة المصروف مرجعية للعرض فقط،
     // والعهدة المستلمة كرصيد افتتاحي لا تُجمع ثانيةً كإيداع.
-    const cashIn = userDrawerTx.filter(t => t.type === 'in' && t.subType !== 'expense' && !t.countedInStartCash && t.status !== 'pending').reduce((s, t) => s + (Number(t.amount) || 0), 0);
-    const cashOut = userDrawerTx.filter(t => (t.type === 'out' || t.type === 'treasury_drop') && t.subType !== 'expense' && t.category !== 'مرتجع مبيعات نقدية').reduce((s, t) => s + (Number(t.amount) || 0), 0);
+    const cashIn = sumDrawerCashIn(userDrawerTx);
+    const cashOut = sumDrawerCashOut(userDrawerTx);
     const treasuryDrops = userDrawerTx.filter(t => t.type === 'treasury_drop').reduce((s, t) => s + (Number(t.amount) || 0), 0);
 
     // المصروفات والمشتريات خلال الوردية (المصروفة نقداً من درج الكاشير حصراً)
@@ -104,7 +104,11 @@ export const ShiftHeaderModal = ({ isOpen, onClose }) => {
       .filter(([id, m]) => id !== 'cash' && m.type !== 'cash')
       .reduce((s, [, m]) => s + (m.amount || 0), 0);
     const totalSales = netCashSales + nonCashSales;
-    const expectedCash = startCash + cashSales - userCashRefunds + cashIn - cashOut - totalCashExpenses - totalCashPurchases;
+    // صيغة واحدة مشتركة — انظر computeExpectedCash في useShiftMetrics.js
+    const expectedCash = computeExpectedCash({
+      startCash, cashSales, cashRefunds: userCashRefunds, cashIn, cashOut,
+      cashExpenses: totalCashExpenses, cashPurchases: totalCashPurchases
+    });
 
     return {
       paymentMethodsBreakdown, cashSales, cardSales, creditSales, totalSales,
@@ -264,7 +268,10 @@ export const ShiftHeaderModal = ({ isOpen, onClose }) => {
       printZReportHtml(closedZReport, storeInfo, users);
     } catch (err) {
       console.error('Print Z-Report Error:', err);
-      window.print();
+      // `window.print()` حُذف من هنا: كان «احتياطاً» يطبع **الصفحة كلها** لا
+      // المستند — فيُهدر ورقاً حرارياً ويُخرج شيئاً لا يشبه الإيصال. وهو كود
+      // ميت أصلاً: دوال الطباعة غير متزامنة ولا ترفض، فهذا الـ catch لا يعمل.
+      // الإعلان عن الفشل صار من `printHtmlDirectly` نفسها (نقطة الطباعة الوحيدة).
     }
   };
 

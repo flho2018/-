@@ -189,3 +189,52 @@ export const useActiveShifts = (userShifts, users) => {
     return Array.from(shiftsMap.values());
   }, [userShifts, users]);
 };
+
+// =========================================================================
+//  الصيغة الوحيدة للنقدية المتوقّعة في الدرج
+// =========================================================================
+//  كانت هذه المعادلة مكتوبة **حرفياً مرتين** (ShiftHeaderModal و
+//  CurrentShiftDrawerTab)، وإلى جانبها أربع صيغ موازية تقرأ عدّادات
+//  الوردية بدل إعادة الحساب (Dashboard، ManagerTreasuryTab، رسالة
+//  الواتساب، خزينة المدير). الخمس تتطابق اليوم **بالصدفة**، لأن كل
+//  عملية تُحدَّث يدوياً في كل موضع. أول عملية يُنسى فيها موضع واحد
+//  تجعل لوحة التحكّم تقول رقماً وتقرير Z يقول آخر، ولا أحد يعرف أيّهما
+//  الصحيح — وهذا أسوأ من رقم خاطئ معروف.
+//
+//  لماذا تُستثنى بنود من cashOut المحسوب من الحركات:
+//   • `subType: 'expense'`  → المصروف يُخصم من قائمة المصروفات
+//   • `subType: 'purchase'` → المشتريات تُخصم من قائمة المشتريات
+//   • `category: 'مرتجع مبيعات نقدية'` → يُخصم عبر userCashRefunds
+//  ولولا الاستثناء لخُصم كل منها مرتين.
+// =========================================================================
+export const computeExpectedCash = ({
+  startCash = 0,
+  cashSales = 0,
+  cashRefunds = 0,
+  cashIn = 0,
+  cashOut = 0,
+  cashExpenses = 0,
+  cashPurchases = 0
+} = {}) => {
+  const n = (v) => Number(v) || 0;
+  return n(startCash) + n(cashSales) - n(cashRefunds) + n(cashIn)
+       - n(cashOut) - n(cashExpenses) - n(cashPurchases);
+};
+
+/** جمع حركات الدرج الخارجة مع استثناء ما يُحتسب من قوائم أخرى */
+export const sumDrawerCashOut = (userDrawerTx = []) =>
+  (userDrawerTx || [])
+    .filter(t => (t.type === 'out' || t.type === 'treasury_drop')
+              && t.subType !== 'expense'
+              && t.subType !== 'purchase'
+              && t.category !== 'مرتجع مبيعات نقدية')
+    .reduce((s, t) => s + (Number(t.amount) || 0), 0);
+
+/** جمع حركات الدرج الداخلة (العهدة الافتتاحية لا تُجمع ثانيةً كإيداع) */
+export const sumDrawerCashIn = (userDrawerTx = []) =>
+  (userDrawerTx || [])
+    .filter(t => t.type === 'in'
+              && t.subType !== 'expense'
+              && !t.countedInStartCash
+              && t.status !== 'pending')
+    .reduce((s, t) => s + (Number(t.amount) || 0), 0);

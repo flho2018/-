@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '../../context/AppContext';
 import { X, Banknote, CreditCard, UserCheck, Split, CheckCircle, AlertCircle, User, Plus, Smartphone, Sparkles, Zap, ShoppingBag, Gift, QrCode, Wallet, Globe, Scale } from 'lucide-react';
 import { formatMoney } from '../../utils/helpers';
@@ -56,6 +56,18 @@ export const CheckoutModal = ({ isOpen, onClose, onPaymentComplete, onSuccess, i
     { id: 2, methodId: 'card', amount: '', cashReceived: '', note: '', refNumber: '' }
   ]);
   const [error, setError] = useState('');
+  // =======================================================================
+  //  قفل ضدّ الضغط المزدوج على «تأكيد الدفع»
+  // =======================================================================
+  //  لم يكن على الزر لا `disabled` ولا حارس داخل الدالة. وعلى شاشة لمس،
+  //  اللمسة المزدوجة (أو ضغطة ثانية أثناء بطء المزامنة) تُصدر **فاتورتين**
+  //  وتخصم المخزون مرتين وتُدخل النقد مرتين. والمرتجع في هذا البرنامج
+  //  محميّ بقفل (`refundingIdsRef`) بينما البيع — وهو الأكثر تكراراً — لا.
+  //  القفل في `useRef` لا في `useState`: الحالة لا تُحدَّث فوراً داخل نفس
+  //  دورة الأحداث، فضغطتان متلاحقتان قد تقرآن القيمة القديمة كلتاهما.
+  // =======================================================================
+  const isCompletingRef = useRef(false);
+  const [isCompleting, setIsCompleting] = useState(false);
 
   const completeCallback = onPaymentComplete || onSuccess;
 
@@ -346,6 +358,7 @@ export const CheckoutModal = ({ isOpen, onClose, onPaymentComplete, onSuccess, i
   };
 
   const handleComplete = () => {
+    if (isCompletingRef.current) return;   // ضغطة ثانية أثناء تنفيذ الأولى
     if (!isShiftOpen) {
       setError('⛔ يمنع إتمام البيع والدفع نهائياً بدون فتح وردية للمستخدم الحالي وتوثيق العهدة!');
       alert('⛔ يمنع إتمام البيع والدفع نهائياً بدون فتح وردية للمستخدم الحالي وتوثيق العهدة!');
@@ -432,6 +445,10 @@ export const CheckoutModal = ({ isOpen, onClose, onPaymentComplete, onSuccess, i
       };
     }) : null;
 
+    // كل عمليات التحقق نجحت — نُغلق الآن، فالضغطة التالية لا تُصدر فاتورة ثانية
+    isCompletingRef.current = true;
+    setIsCompleting(true);
+
     const createdInvoice = checkout({
       paymentMethod: selectedMethod?.id || 'cash',
       paymentMethodName: selectedMethod?.name || 'نقداً',
@@ -446,6 +463,10 @@ export const CheckoutModal = ({ isOpen, onClose, onPaymentComplete, onSuccess, i
     if (createdInvoice) {
       if (completeCallback) completeCallback(createdInvoice);
       onClose();
+    } else {
+      // لم تُنشأ فاتورة (حارس صلاحية أو وردية) — نفتح القفل ليعيد الكاشير المحاولة
+      isCompletingRef.current = false;
+      setIsCompleting(false);
     }
   };
 
@@ -972,10 +993,11 @@ export const CheckoutModal = ({ isOpen, onClose, onPaymentComplete, onSuccess, i
           <button
             type="button"
             onClick={handleComplete}
-            className="w-full py-3.5 bg-gradient-to-r from-pink-600 via-rose-600 to-purple-600 hover:from-pink-500 hover:to-purple-500 text-white rounded-2xl text-sm font-black flex items-center justify-center gap-2 shadow-lg shadow-pink-600/30 transition active:scale-95 border border-pink-400/30"
+            disabled={isCompleting}
+            className="w-full py-3.5 bg-gradient-to-r from-pink-600 via-rose-600 to-purple-600 hover:from-pink-500 hover:to-purple-500 text-white rounded-2xl text-sm font-black flex items-center justify-center gap-2 shadow-lg shadow-pink-600/30 transition active:scale-95 border border-pink-400/30 disabled:opacity-60 disabled:active:scale-100 disabled:cursor-not-allowed"
           >
             <CheckCircle className="w-5 h-5" />
-            <span>تأكيد الدفع وإصدار الفاتورة 🌸</span>
+            <span>{isCompleting ? 'جارٍ إصدار الفاتورة…' : 'تأكيد الدفع وإصدار الفاتورة 🌸'}</span>
           </button>
 
         </div>

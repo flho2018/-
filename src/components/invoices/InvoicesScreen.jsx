@@ -509,7 +509,7 @@ export const InvoicesScreen = ({ setCurrentTab, setIsCartOpen }) => {
         </div>
       </div>
     `;
-    printHtmlDirectly(html, `سند_قبض_${receiptData.receiptNumber || 'عميل'}`);
+    printHtmlDirectly(html, `سند_قبض_${receiptData.receiptNumber || 'عميل'}`, { purpose: 'invoice', storeInfo });
   };
 
   const handleConfirmSettle = (e) => {

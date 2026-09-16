@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   INITIAL_STORE_INFO,
   INITIAL_PAYMENT_METHODS,
@@ -14,8 +14,13 @@ import { ROLE_PRESETS, checkUserPermission, FULL_ADMIN_PERMISSIONS } from '../ut
 import { signInWithEmailAndPassword, signOut, onAuthStateChanged } from 'firebase/auth';
 import { auth } from '../utils/firebase';
 import { getRoleByEmail } from '../utils/authUsers';
+import { measureClockSkew, describeSkew, isSkewDangerous } from '../utils/clockSkew';
+import {
+  filterInvoicesByShift, filterDrawerTxByShift, calculateShiftCashRefunds,
+  classifyInvoicePayments, computeExpectedCash, sumDrawerCashIn, sumDrawerCashOut
+} from '../utils/useShiftMetrics';
 import { playGentleNotificationSound } from '../utils/soundHelper';
-import { hashPin, verifyPin, hashNfcCard, verifyNfcCard, isHashedPin } from '../utils/security';
+import { hashPin, verifyPin, hashNfcCard, verifyNfcCard, isHashedPin, validatePinStrength } from '../utils/security';
 import { logAudit as logAuditCloud } from '../utils/audit';
 import { idbGet, idbSet, safeLocalStorageSet, migrateLocalStorageToIndexedDB } from '../utils/idbStorage';
 
@@ -1154,20 +1159,46 @@ export const AppProvider = ({ children }) => {
     // ترحيل البيانات القديمة من localStorage لمرة واحدة تلقائياً
     migrateLocalStorageToIndexedDB();
 
-    // فحص واسترجاع البيانات الضخمة من IndexedDB إذا كانت أحدث أو أكبر من localStorage
+    // =====================================================================
+    //  استرجاع المجموعات الضخمة من IndexedDB — مع احترام التصفير
+    // =====================================================================
+    //  العطل الذي كان هنا: الشرط كان `idb.length > prev.length` وحده، أي
+    //  «الأطول هو الأصحّ». وهذا ينهار تماماً بعد التصفير:
+    //    ١) التصفير يمسح localStorage والسحابة — **ولا يمسّ IndexedDB**
+    //       (لا دالة تصفير واحدة من التسع عشرة تستدعي idbSet).
+    //    ٢) عند الإقلاع التالي: localStorage = [] و IndexedDB فيه المئات،
+    //       فالشرط يرى «الأطول» ويُرجع **كل الفواتير المحذوفة**.
+    //    ٣) واللقطة السحابية الفارغة لا تُنقذ: `snap.empty` تعود مبكراً
+    //       عمداً (مجموعة فارغة ≠ «احذف كل شيء» — §5.3).
+    //  فالنتيجة: مالكٌ يُصفّر حساباته، ثم يعيد التحميل فيجدها كما كانت.
+    //
+    //  العلاج: ختم التصفير المحفوظ (`<key>_reset_at`) هو الحكم. أي نسخة
+    //  في IndexedDB أقدم من آخر تصفير تُهمَل وتُمسح — والطول لم يعد دليلاً
+    //  على شيء.
+    // =====================================================================
     const hydrateLargeCollections = async () => {
-      try {
-        const idbInvoices = await idbGet('naif_pos_v3_invoices');
-        if (Array.isArray(idbInvoices) && idbInvoices.length > 0) {
-          setInvoices(prev => (idbInvoices.length > prev.length ? idbInvoices : prev));
+      const hydrate = async (key, setter) => {
+        try {
+          const rows = await idbGet(`naif_pos_v3_${key}`);
+          if (!Array.isArray(rows) || rows.length === 0) return;
+
+          const resetAt = Number(localStorage.getItem(`naif_pos_v3_${key}_reset_at`) || 0);
+          const idbStamp = Number(await idbGet(`naif_pos_v3_ts_${key}`)) || 0;
+
+          if (resetAt > 0 && idbStamp <= resetAt) {
+            // نسخة ما قبل التصفير: تُمسح كي لا تُحيي المحذوف في كل إقلاع
+            await idbSet(`naif_pos_v3_${key}`, []);
+            console.warn(`[Storage] أُهملت نسخة IndexedDB لـ "${key}" لأنها أقدم من آخر تصفير`);
+            return;
+          }
+          setter(prev => (rows.length > prev.length ? rows : prev));
+        } catch (err) {
+          console.warn(`[Storage] تعذّر استرجاع "${key}" من IndexedDB:`, err?.message);
         }
-        const idbShifts = await idbGet('naif_pos_v3_shifts_history');
-        if (Array.isArray(idbShifts) && idbShifts.length > 0) {
-          setShiftsHistory(prev => (idbShifts.length > prev.length ? idbShifts : prev));
-        }
-      } catch (err) {
-        console.warn('[Storage] Hydration warning:', err?.message);
-      }
+      };
+
+      await hydrate('invoices', setInvoices);
+      await hydrate('shifts_history', setShiftsHistory);
     };
     hydrateLargeCollections();
   }, []);
@@ -1595,10 +1626,26 @@ export const AppProvider = ({ children }) => {
 
   // حسابات إجماليات السلة والضريبة الذكية والمطابقة المحاسبية الدقيقة
   const getCartTotals = () => {
+    // =====================================================================
+    //  رقمٌ واحد تالف كان يُفسد الفاتورة كلها
+    // =====================================================================
+    //  كان `Number(item.unitPrice ?? …)` بلا حارس. و`Number('abc')` تساوي
+    //  `NaN`، و`NaN` يعدي كل ما يُجمع معه — فصنف واحد بسعر غير رقمي (استيراد
+    //  إكسل بخلية نصية، أو حقل أُفرغ ثم حُفظ) كان يجعل **إجمالي الفاتورة
+    //  كلها `NaN`**: الشاشة تعرض «NaN ر.س»، والفاتورة تُحفظ بإجمالي تالف،
+    //  وتقارير اليوم كلها تنهار معها.
+    //  `|| 0` يقصر الضرر على الصنف التالف وحده — وهو أصدق من فاتورة بلا رقم.
+    //  اكتُشف بـ `tests/financial_real.test.mjs` عند تشغيل الدالة الحقيقية.
+    // =====================================================================
+    const safeNum = (v, fallback = 0) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : fallback;
+    };
+
     // 1. المجموع الإجمالي للأصناف قبل أي خصم (Gross Subtotal)
     const grossSubtotal = (cart || []).reduce((sum, item) => {
-      const uPrice = Number(item.unitPrice ?? item.price ?? item.product?.sellingPrice ?? 0);
-      const q = Number(item.qty ?? item.quantity ?? 1);
+      const uPrice = safeNum(item.unitPrice ?? item.price ?? item.product?.sellingPrice ?? 0);
+      const q = safeNum(item.qty ?? item.quantity ?? 1, 1);
       return sum + (uPrice * q);
     }, 0);
 
@@ -1611,9 +1658,9 @@ export const AppProvider = ({ children }) => {
     // 4. الخصم العام على مستوى الفاتورة (مبلغ أو نسبة)
     let globalDiscount = 0;
     if (cartDiscount?.type === 'percent') {
-      globalDiscount = (afterItemDiscounts * (cartDiscount?.value || 0)) / 100;
+      globalDiscount = (afterItemDiscounts * safeNum(cartDiscount?.value)) / 100;
     } else {
-      globalDiscount = Number(cartDiscount?.value) || 0;
+      globalDiscount = safeNum(cartDiscount?.value);
     }
     globalDiscount = Math.min(afterItemDiscounts, globalDiscount);
 
@@ -1796,7 +1843,9 @@ export const AppProvider = ({ children }) => {
 
     const effectiveCustomer = customer || selectedCustomer;
     const totals = getCartTotals();
-    const invoiceNum = generateInvoiceNumber((invoices || []).length + 1, currentUser, invoices);
+    // clientId = معرّف هذا الجهاز الثابت، وهو ما يضمن ألّا يتصادم رقم
+    // فاتورة هذا الجهاز مع رقم جهاز آخر يبيع في نفس الثانية بنفس الحساب.
+    const invoiceNum = generateInvoiceNumber((invoices || []).length + 1, currentUser, invoices, syncEngine.clientId);
     const dateStr = new Date().toISOString();
 
     // توليد نص TLV للـ QR
@@ -2179,11 +2228,13 @@ export const AppProvider = ({ children }) => {
     // تنبيه قبل صرف استرجاع نقدي من درج لا يحتوي نقدية كافية
     // (يحدث عادةً بعد سحب العهدة النقدية من الكاشير للمدير: الدرج فاضٍ فيظهر بالسالب)
     if (cashDeduct > 0) {
+      // ملاحظة: `drawerExpenses` حُذف من هذه الصيغة — كان حقلاً يُقرأ ولا
+      // يُكتب في أي مكان (صفر دائماً)، والمصروفات محسوبة أصلاً ضمن
+      // `cashOut`. إبقاؤه كان لغماً: أول من يكتبه يجعل المصروف يُخصم مرتين.
       const drawerCash = (Number(effShift.startCash) || 0)
         + (Number(effShift.cashSales) || 0)
         + (Number(effShift.cashIn) || 0)
-        - (Number(effShift.cashOut) || 0)
-        - (Number(effShift.drawerExpenses) || 0);
+        - (Number(effShift.cashOut) || 0);
 
       if (cashDeduct > drawerCash + 0.01) {
         const proceed = window.confirm(
@@ -3340,6 +3391,37 @@ export const AppProvider = ({ children }) => {
 
     // 3. خصم المبلغ المدفوع من نقدية الوردية إذا كان نقداً وتحديث ورديات المستخدمين
     if (paymentMethod === 'cash' && numPaid > 0 && activeShift?.isOpen) {
+      // =================================================================
+      //  سطر مرجعي في حركات الدرج للمشتريات النقدية
+      // =================================================================
+      //  كانت الفاتورة تخصم من `shift.cashOut` بلا أي سطر في سجل الدرج،
+      //  فيرى الكاشير نقديته نقصت ولا يجد ما يفسّرها. وهي نفس المشكلة
+      //  التي عولجت للمصروفات (انظر `addExpense`) وبقيت هنا.
+      //  `subType: 'purchase'` مستثنى من جمع cashOut المحسوب من الحركات،
+      //  لأن المبلغ يُخصم أصلاً من قائمة المشتريات عند حساب النقدية
+      //  المتوقعة — وإلا خُصم مرتين.
+      // =================================================================
+      const purTx = {
+        id: `dtx-pur-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        shiftId: activeShift?.id || null,
+        userId: currentUserId,
+        user: currentUserName,
+        type: 'out',
+        subType: 'purchase',
+        purchaseId: newPurchase.id,
+        amount: numPaid,
+        reason: `مشتريات نقدية من (${supplierName || 'مورد'}) — ${newPurchase.purchaseNumber}`,
+        recipient: supplierName || 'مورد',
+        voucherNo: newPurchase.purchaseNumber,
+        date: newPurchase.date
+      };
+      setDrawerTransactions(prev => {
+        const nextTx = [purTx, ...(prev || [])];
+        try { localStorage.setItem('naif_pos_v3_drawer_tx', JSON.stringify(nextTx)); } catch (e) {}
+        saveAndSync('drawer_tx', nextTx, true);
+        return nextTx;
+      });
+
       setActiveShift(prev => {
         const updated = {
           ...prev,
@@ -4628,6 +4710,7 @@ export const AppProvider = ({ children }) => {
     localStorage.setItem('naif_pos_v3_shifts_history', '[]');
     localStorage.setItem('naif_pos_v3_shifts_history_reset_at', String(nowTs));
     syncEngine.saveKey('shifts_history', [], true, nowTs, true);
+    purgeLocalKey('shifts_history', [], nowTs);
     
     broadcastStoreActivity({
       type: 'shifts_reset',
@@ -5093,6 +5176,81 @@ export const AppProvider = ({ children }) => {
   };
 
   // ملخص محاسبي فوري لتدفق النقدية والخزينة والبنك بكافة الركائز الـ 7
+  // =======================================================================
+  //  نقد وردية مفتوحة — من السجلات الأصلية بنفس صيغة شاشة الدرج
+  // =======================================================================
+  //  تُستعمل في ملخّص الخزينة وفي شاشة المدير، فيرى الطرفان الرقم نفسه
+  //  الذي يراه الكاشير في درجه — لا رقماً ثالثاً مشتقّاً من عدّادات.
+  // =======================================================================
+  const computeOpenShiftCash = (shift) => {
+    if (!shift || shift.isOpen !== true) return 0;
+    const uid = shift.userId || shift.cashierId || '';
+    const uname = String(shift.cashierName || '').trim();
+    const openedAt = new Date(shift.openedAt || 0).getTime();
+
+    const belongs = (rec) => {
+      if (!rec?.date) return false;
+      if (rec.shiftId && shift.id) return rec.shiftId === shift.id;
+      const t = new Date(rec.date).getTime();
+      const mine = (rec.userId && rec.userId === uid) || (uname && rec.user === uname);
+      return t >= openedAt && Boolean(mine);
+    };
+
+    const shiftInvoices = filterInvoicesByShift(invoices, shift, uid, uname);
+    const { cashSales } = classifyInvoicePayments(shiftInvoices, storeInfo?.paymentMethods);
+    const shiftTx = filterDrawerTxByShift(drawerTransactions, shift, uid, uname);
+
+    const cashExpenses = (expenses || [])
+      .filter(e => !e.isIncome && e.paymentMethod === 'cash'
+                && (e.paymentSource === 'drawer' || !e.paymentSource) && belongs(e))
+      .reduce((a, e) => a + (Number(e.amount) || 0), 0);
+
+    const cashPurchases = (purchases || [])
+      .filter(p => (!p.paymentMethod || p.paymentMethod === 'cash')
+                && (p.paymentSource === 'drawer' || !p.paymentSource) && belongs(p))
+      .reduce((a, p) => a + (Number(p.paidAmount ?? p.totalAmount ?? p.total ?? p.amount) || 0), 0);
+
+    return computeExpectedCash({
+      startCash: shift.startCash,
+      cashSales,
+      cashRefunds: calculateShiftCashRefunds(invoices, shift, uid, uname),
+      cashIn: sumDrawerCashIn(shiftTx),
+      cashOut: sumDrawerCashOut(shiftTx),
+      cashExpenses,
+      cashPurchases
+    });
+  };
+
+  // =======================================================================
+  //  إنذار انحراف الساعة
+  // =======================================================================
+  //  المزامنة تحسم كل تعارض بـ `updatedAt` المكتوب من ساعة الجهاز. فجهاز
+  //  ساعته متقدّمة يفوز بكل تعارض ولو كانت نسخته أقدم، ومتأخّر يخسر تعديلاته
+  //  الصحيحة — ورقمان مختلفان على جهازين بلا سبب ظاهر في أي سجل.
+  //  الإصلاح الجذري (`serverTimestamp` في كل كتابة) تغييرٌ واسع في دلالات
+  //  الوقت لا يصحّ بلا اختبار بجهازين. فحتى ذلك الحين: **نجعل العطل مرئياً**.
+  //  يُفحص مرة عند الإقلاع فقط — قياسٌ متكرّر لا يضيف شيئاً وساعةُ الجهاز
+  //  لا تتغيّر أثناء الوردية عادةً.
+  // =======================================================================
+  useEffect(() => {
+    if (!firebaseUser) return;
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      const skew = await measureClockSkew();
+      if (cancelled || !isSkewDangerous(skew)) return;
+      const msg = describeSkew(skew);
+      console.warn('[Clock] ' + msg);
+      try {
+        broadcastStoreActivity({
+          type: 'clock_skew',
+          title: '⏰ ساعة الجهاز غير مضبوطة',
+          message: `${msg}. صحّح وقت الجهاز من إعدادات النظام — وإلا اختلطت أسبقية التعديلات بين الأجهزة وظهرت أرقام متضاربة.`
+        });
+      } catch (e) {}
+    }, 8000);   // بعد استقرار الإقلاع، فلا يزاحم أول مزامنة
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [firebaseUser]);
+
   const getTreasurySummary = () => {
     const history = Array.isArray(shiftsHistory) ? shiftsHistory : [];
     const ledger = Array.isArray(treasuryLedger) ? treasuryLedger : [];
@@ -5109,13 +5267,19 @@ export const AppProvider = ({ children }) => {
     const pendingHandoversTotal = pendingShifts.reduce((sum, s) => sum + (Number(s.handoverAmount ?? s.actualCash ?? s.expectedCash ?? 0) || 0), 0);
 
     const activeOpenShiftsList = Object.values(userShifts || {}).filter(s => s && s.isOpen === true);
-    const openShiftsCashTotal = activeOpenShiftsList.reduce((sum, s) => {
-      const startCash = Number(s.startCash) || 0;
-      const cashSales = Number(s.cashSales) || 0;
-      const cashIn = Number(s.cashIn) || 0;
-      const cashOut = Number(s.cashOut) || 0;
-      const drawerExpenses = Number(s.drawerExpenses) || 0;
-      return sum + Math.max(0, startCash + cashSales + cashIn - cashOut - drawerExpenses);
+    // =====================================================================
+    //  نقد الورديات المفتوحة — يُعاد حسابه من السجلات لا من العدّادات
+    // =====================================================================
+    //  كان يقرأ `s.cashSales`/`s.cashIn`/`s.cashOut` مباشرةً، وهي عدّادات
+    //  تراكمية تُزامَن **كقيم مطلقة** (`user_shifts` ليست في INCREMENT_OWNED).
+    //  فحين يكتب جهازان نفس مستند الوردية — المدير يغلق وردية كاشير بينما
+    //  الكاشير يبيع — تفوز الكتابة الأحدث ختماً ولو حُسبت من أساس قديم،
+    //  فيضيع فرق الآخر. والرقم الذي يبني عليه المدير قراره يصير خاطئاً بصمت.
+    //  إعادة الحساب من الفواتير والحركات والمصروفات والمشتريات تُخرج الرقم
+    //  من دائرة ذلك السباق أصلاً — فالسجلات لا تتسابق، كلٌّ منها مستند مستقل.
+    // =====================================================================
+    const openShiftsCashTotal = activeOpenShiftsList.reduce((sum, sh) => {
+      return sum + Math.max(0, computeOpenShiftCash(sh));
     }, 0);
 
     const cashierTotalCash = pendingHandoversTotal + openShiftsCashTotal;
@@ -5434,10 +5598,15 @@ export const AppProvider = ({ children }) => {
     };
     const strData = JSON.stringify(payload);
 
-    if (strData.length > AUTO_BACKUP_MAX_BYTES) {
-      console.warn('[Backup] النسخة أكبر من حد المستند — لم تُرفع تلقائياً. نزّل نسخة يدوية وأرشِف الفواتير القديمة.');
-      return { success: false, tooLarge: true };
-    }
+    // =====================================================================
+    //  حارس الحجم القديم حُذف — صار محرّك المزامنة يُجزّئ النسخة
+    // =====================================================================
+    //  كان هنا رفضٌ للرفع فوق ٨٠٠ ك.ب مع `console.warn` وحده. الحارس منع
+    //  الانهيار لكنه صنع ما هو أسوأ: متجر يكبر ← النسخة تتجاوز الحدّ ←
+    //  **النسخ تتوقّف نهائياً وصامتةً**، ولا ختم يُكتب فتُعاد المحاولة
+    //  وتفشل كل يوم إلى الأبد، والمالك يظنّ نفسه محمياً منذ شهور.
+    //  الآن `saveBackup` تقسّم البيانات على مجموعة فرعية بلا سقف عملي.
+    // =====================================================================
 
     const res = await syncEngine.saveBackup({
       id: 'bkp-' + Date.now(),
@@ -5452,6 +5621,23 @@ export const AppProvider = ({ children }) => {
 
     if (res?.success) {
       try { localStorage.setItem(AUTO_BACKUP_STAMP_KEY, String(Date.now())); } catch (e) {}
+    } else {
+      // فشل النسخة الاحتياطية لا يجوز أن يبقى في الطرفية وحدها: هذا هو
+      // بالضبط الخطأ الذي يُكتشف يوم تحتاج النسخة ولا تجدها.
+      const why = String(res?.code || '').includes('permission-denied')
+        ? 'الحساب الحالي لا يملك صلاحية الكتابة في النسخ السحابية (تُرفع من جهاز المدير وحده).'
+        : (res?.error?.message || 'خطأ غير معروف');
+      console.error('[Backup] ✖ فشل رفع النسخة السحابية:', why);
+      if (source !== 'auto') {
+        try { window.alert('⛔ لم تُرفع النسخة الاحتياطية السحابية: ' + why); } catch (e) {}
+      }
+      try {
+        broadcastStoreActivity({
+          type: 'backup_failed',
+          title: '⛔ فشل النسخة الاحتياطية السحابية',
+          message: why
+        });
+      } catch (e) {}
     }
     return res;
   };
@@ -5673,12 +5859,16 @@ export const AppProvider = ({ children }) => {
   // دوال إدارة المستخدمين وصلاحيات النظام الدقيقة مع التطهير الفوري لسجل الورديات
   // =========================================================================
   const addUser = (userData) => {
-    const rawPin = String(userData.pin || '1234').trim();
+    // رقم افتراضي '1234' كان يُمنح صامتاً لكل من يُضاف بلا رقم. النتيجة:
+    // حساب يعمل برقم يعرفه كل من قرأ الكود، ولا أحد يعلم أنه ممنوح.
+    // الآن: من يُضاف بلا رقم يبقى بلا تجزئة فلا يدخل، حتى يُعيَّن رقمه
+    // صراحةً من شاشة المستخدمين. الصمت هنا أخطر من الرفض.
+    const rawPin = String(userData.pin || '').trim();
     const newUser = {
       id: userData.id || `user-${Date.now()}`,
       name: (userData.name || '').trim() || 'مستخدم جديد',
       // pin field removed - never store PIN in plain text
-      pinHash: userData.pinHash || hashPin(rawPin),
+      pinHash: userData.pinHash || (rawPin ? hashPin(rawPin) : ''),
       role: userData.role || 'cashier',
       roleName: userData.roleName || (userData.role === 'admin' ? '👑 مدير النظام' : '🌸 كاشير مبيعات'),
       phone: userData.phone || '',
@@ -5877,8 +6067,8 @@ export const AppProvider = ({ children }) => {
   };
 
   // تسجيل حركة دخول جديدة ومواصفات الجهاز في سجل المراقبة والأمان
-  const recordLoginEvent = (user, method = 'pin') => {
-    if (!user) return;
+  const recordLoginEvent = (user, method = 'pin', status = 'success') => {
+    if (!user && status === 'success') return;
     try {
       const deviceInfo = getDeviceInfo();
       const newLog = {
@@ -5887,11 +6077,19 @@ export const AppProvider = ({ children }) => {
         userId: user.id,
         userName: user.name || 'مستخدم',
         userRole: user.role || 'cashier',
-        roleLabel: user.role === 'admin' ? 'المدير العام 👑' : 'كاشير مبيعات 👤',
+        // سجل أمان يكتب اسم الدور خطأً لا يصلح دليلاً: كان كل من ليس مديراً
+        // يُسجَّل «كاشير مبيعات»، فيظهر المشرف والمحاسبة كاشيرَين في تحقيق
+        // لاحق عن من فتح الدرج أو عدّل سعراً.
+        roleLabel: {
+          admin: 'المدير العام 👑',
+          supervisor: 'مشرف الفرع 🛡️',
+          accountant: 'المشرف المالي 📊',
+          cashier: 'كاشير مبيعات 👤'
+        }[user.role] || 'كاشير مبيعات 👤',
         loginMethod: method, // 'pin' | 'nfc' | 'switch'
         methodLabel: method === 'nfc' ? 'بطاقة NFC ذكية 🪪' : method === 'switch' ? 'تبديل مستخدم سريع 🔄' : 'رمز PIN السري 🔑',
         device: deviceInfo,
-        status: 'success'
+        status
       };
 
       setLoginLogs(prev => {
@@ -5909,6 +6107,44 @@ export const AppProvider = ({ children }) => {
     }
   };
 
+  // =======================================================================
+  //  تسجيل محاولة دخول فاشلة
+  // =======================================================================
+  //  كان `status: 'success'` ثابتاً في الكود والدالة لا تُستدعى إلا عند
+  //  النجاح — فسجل الأمان لا يُظهر محاولة تخمين رقم **أبداً**. سجلٌّ يرى
+  //  الناجحين وحدهم لا يكشف اقتحاماً؛ يكشف حضوراً فقط.
+  //  لا يُسجَّل الرقم المُدخل ولا أي جزء منه: تسجيله يحوّل السجل نفسه إلى
+  //  قائمة أرقام محتملة يقرأها من يطّلع عليه.
+  // =======================================================================
+  const recordFailedLoginAttempt = (method = 'pin', note = '') => {
+    try {
+      const deviceInfo = getDeviceInfo();
+      const failLog = {
+        id: `login-fail-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        timestamp: new Date().toISOString(),
+        userId: null,
+        userName: 'محاولة فاشلة',
+        userRole: 'unknown',
+        roleLabel: 'غير معروف ⚠️',
+        loginMethod: method,
+        methodLabel: method === 'nfc' ? 'بطاقة NFC ذكية 🪪' : 'رمز PIN السري 🔑',
+        device: deviceInfo,
+        status: 'failed',
+        note: String(note || '').slice(0, 120)
+      };
+      setLoginLogs(prev => {
+        const next = [failLog, ...(Array.isArray(prev) ? prev : [])].slice(0, 300);
+        try {
+          localStorage.setItem('naif_pos_v3_login_logs', JSON.stringify(next));
+          syncEngine.saveKey('login_logs', next, true);
+        } catch (e) {}
+        return next;
+      });
+    } catch (err) {
+      console.warn('Error recording failed login:', err);
+    }
+  };
+
   const clearLoginLogs = () => {
     setLoginLogs([]);
     try {
@@ -5917,6 +6153,101 @@ export const AppProvider = ({ children }) => {
     } catch (e) {
       console.warn('Failed to clear login logs:', e);
     }
+  };
+
+  // =========================================================================
+  //  تهيئة أول رقم دخول (First-Run PIN Setup)
+  // =========================================================================
+  //  بعد حذف الأرقام الصريحة من بيانات البذرة، لا يملك أي مستخدم تجزئة
+  //  على تثبيت نظيف — ولا أحد يستطيع الدخول. وهذا مقصود: البديل الوحيد
+  //  الآخر هو رقم افتراضي معروف، وهو بالضبط ما نغلقه.
+  //
+  //  البوابة التي تحمي هذه الشاشة ليست رقماً بل حساب Firebase: شاشة
+  //  القفل لا تُعرض أصلاً إلا بعد تسجيل دخول ناجح (App.jsx:294)، ومن
+  //  يملك بريد المدير وكلمته يملك النظام كله على أي حال.
+  //
+  //  حالة ثانية اكتُشفت على متجر حقيقي: الموظفون يملكون أرقاماً بينما
+  //  صاحب دور admin لا يملك تجزئة إطلاقاً. فالشرط القديم («لا أحد يملك
+  //  تجزئة») لا يتحقّق، والشاشة لا تظهر، وأعلى دور في النظام يبقى محجوباً
+  //  بلا أي مسار لفتحه — لأن تعيين رقمه يحتاج دخولاً إلى شاشة المستخدمين.
+  //
+  //  فصارت الشاشة تظهر أيضاً حين يكون المديرُ بلا تجزئة، لكن **بشرط أن
+  //  يكون الداخل بحساب Firebase هو حساب المدير نفسه** (`getRoleByEmail`).
+  //  وبدون هذا الشرط تتحوّل الشاشة إلى تصعيد صلاحيات: جهاز كاشير مسجَّل
+  //  بحساب كاشير كان سيستطيع تعيين رقم المدير ثم الدخول به.
+  //
+  //  وفي الحالتين لا تصلح الشاشة لإعادة تعيين رقم **موجود**: من يملك
+  //  تجزئة صالحة لا تُمسّ تجزئته هنا أبداً — تغييرها من شاشة المستخدمين وحدها.
+  // =========================================================================
+
+  /** المدير المستهدف بالتهيئة: صاحب دور admin المفعّل بلا تجزئة صالحة. */
+  const pinSetupTarget = useMemo(() => {
+    if (!Array.isArray(users) || users.length === 0) return null;
+
+    // الحالة الأولى — تثبيت نظيف: لا أحد إطلاقاً يملك تجزئة.
+    const anyHash = users.some(u => u && u.isActive !== false && isHashedPin(u.pinHash));
+    if (!anyHash) {
+      return users.find(u => u && u.role === 'admin' && u.isActive !== false)
+          || users.find(u => u && u.isActive !== false)
+          || null;
+    }
+
+    // الحالة الثانية — المدير وحده محجوب. تُفتح لحساب المدير في Firebase فقط.
+    if (getRoleByEmail(firebaseUser?.email)?.role !== 'admin') return null;
+    return users.find(u => u && u.role === 'admin' && u.isActive !== false
+                        && !isHashedPin(u.pinHash)) || null;
+  }, [users, firebaseUser]);
+
+  const needsPinSetup = !!pinSetupTarget;
+
+  /** يعيّن أول رقم للمدير — لمن لا يملك تجزئة، ولا يمسّ تجزئة قائمة أبداً. */
+  const setupInitialPin = (newPin) => {
+    const clean = String(newPin ?? '').trim();
+    // أربعة أرقام بالضبط: لوحة الدخول تتحقّق تلقائياً عند الرقم الرابع ولا
+    // زر إرسال فيها، فرقمٌ أطول لا يمكن إدخاله ويحبس صاحبه خارج النظام.
+    // (validatePinStrength تجيز ٤–٦ لأنها مشتركة مع مسارات أخرى.)
+    if (!/^\d{4}$/.test(clean)) {
+      return { success: false, message: 'الرقم يجب أن يكون أربعة أرقام.' };
+    }
+    const strength = validatePinStrength(clean);
+    if (!strength.valid) return { success: false, message: strength.message };
+
+    // إعادة اشتقاق الهدف عند لحظة التنفيذ لا عند التصيير: لقطة مزامنة قد
+    // تكون وصلت من جهاز آخر بين عرض الشاشة والضغط على الزر فعيّنت الرقم.
+    const target = pinSetupTarget;
+    if (!target) {
+      return { success: false, message: 'عُيّن رقم على هذا الحساب بالفعل — أدخله أو غيّره من شاشة المستخدمين.' };
+    }
+    // حارس مستقلّ: لا تُكتب تجزئة فوق تجزئة قائمة مهما قال الاشتقاق أعلاه.
+    const live = users.find(u => u && u.id === target.id);
+    if (!live || live.isActive === false || isHashedPin(live.pinHash)) {
+      return { success: false, message: 'عُيّن رقم على هذا الحساب بالفعل — أدخله أو غيّره من شاشة المستخدمين.' };
+    }
+    // ورقم المدير لا يُعيَّن إلا من جهاز داخل بحساب المدير في Firebase.
+    if (live.role === 'admin'
+        && users.some(u => u && u.isActive !== false && isHashedPin(u.pinHash))
+        && getRoleByEmail(firebaseUser?.email)?.role !== 'admin') {
+      return { success: false, message: 'تعيين رقم المدير يتطلّب الدخول بحساب المدير العام في Firebase.' };
+    }
+
+    const hash = hashPin(clean);
+    const updated = users.map(u => u.id === target.id
+      ? { ...u, pinHash: hash, updatedAt: new Date().toISOString() }
+      : u);
+    setUsers(updated);
+    try { localStorage.setItem('naif_pos_v3_users', JSON.stringify(updated)); } catch (e) {}
+    saveAndSync('users', updated, true);
+
+    try {
+      logAudit({
+        action: 'تهيئة أول رقم دخول',
+        target: target.name,
+        details: `عُيّن رقم دخول لـ«${target.name}» (${target.role}) من شاشة التهيئة بعد تسجيل دخول Firebase بالبريد ${firebaseUser?.email || 'غير معروف'}`,
+        severity: 'high'
+      });
+    } catch (e) { /* التقييد لا يمنع التهيئة */ }
+
+    return { success: true, user: target, message: `تم تعيين رقم «${target.name}» — أدخله الآن للدخول.` };
   };
 
   const loginWithPin = (enteredPin, specificUserId = null) => {
@@ -5945,6 +6276,7 @@ export const AppProvider = ({ children }) => {
       recordLoginEvent(foundUser, 'pin');
       return { success: true, user: foundUser };
     }
+    recordFailedLoginAttempt('pin', specificUserId ? `محاولة على مستخدم محدد: ${specificUserId}` : 'رقم غير مطابق لأي مستخدم');
     return { success: false, message: 'رمز الدخول (PIN) غير صحيح!' };
   };
 
@@ -5953,31 +6285,24 @@ export const AppProvider = ({ children }) => {
     const cleanId = String(nfcCardId).trim().toLowerCase();
     const foundUser = users.find(u => verifyNfcCard(cleanId, u));
     if (foundUser) {
-      // الاحتياط التام: حفظ الفاتورة والعمليات القائمة للكاشير السابق كفاتورة معلقة بأمان
-      let cartSafeguarded = false;
+      // =====================================================================
+      //  تبديل المستخدم بالبطاقة يتصرّف كتبديله بالرقم — تفريغ لا تعليق
+      // =====================================================================
+      //  كان هذا المسار يُنشئ **فاتورة معلقة** للسلة القائمة، بينما تعليق
+      //  الفواتير **موقوف بقرار إدارة المتجر** (`HOLD_BILLS_ENABLED = false`)
+      //  ومسار التبديل بالرقم يُفرّغ السلة. فطريقان للفعل نفسه بسلوكين
+      //  متناقضين: من يبدّل ببطاقته يُراكم فواتير معلّقة لا يستطيع أحد
+      //  إكمالها ولا حذفها من الشاشة — وهي المشكلة التي أُوقف التعليق
+      //  بسببها أصلاً.
+      //  السلة ليست فاتورة ولم يُسجَّل فيها أي أثر مالي، فلا يضيع بتفريغها
+      //  شيء — وهو نفس التعليل المكتوب في مسار الرقم.
+      // =====================================================================
+      let cartCleared = false;
       let prevCashierName = currentUser?.name || 'كاشير';
 
       if (cart && cart.length > 0 && currentUser?.id !== foundUser.id) {
-        const heldBill = {
-          id: `hold-nfc-${Date.now()}`,
-          label: `فاتورة معلقة تلقائياً (الكاشير: ${prevCashierName})`,
-          cart: [...cart],
-          selectedCustomer,
-          cartDiscount,
-          cartNotes,
-          cashierId: currentUser?.id,
-          cashierName: prevCashierName,
-          timestamp: new Date().toISOString(),
-          itemsCount: cart.reduce((s, i) => s + i.qty, 0),
-          total: getCartTotals().total,
-          isNfcAutoParked: true
-        };
-        const nextHeld = [heldBill, ...heldBills];
-        setHeldBills(nextHeld);
-        localStorage.setItem('naif_pos_v3_held_bills', JSON.stringify(nextHeld));
-        syncEngine.saveKey('held_bills', nextHeld, true);
         clearCart();
-        cartSafeguarded = true;
+        cartCleared = true;
       }
 
       setCurrentUser(foundUser);
@@ -5989,17 +6314,20 @@ export const AppProvider = ({ children }) => {
       localStorage.setItem('naif_pos_v3_current_user', JSON.stringify(foundUser));
       recordLoginEvent(foundUser, 'nfc');
 
-      const msg = cartSafeguarded 
-        ? `مرحباً بك (${foundUser.name}) 🌸 • تم حفظ فاتورة (${prevCashierName}) السابقة معلقة بأمان 📥`
+      // الرسالة تقول ما حدث فعلاً: السلة فُرّغت. الرسالة القديمة كانت تَعِد
+      // بـ«حفظ الفاتورة معلقة بأمان» — وعدٌ يجعل الكاشير يبحث عنها ولا يجدها.
+      const msg = cartCleared
+        ? `مرحباً بك (${foundUser.name}) 🌸 • فُرّغت سلة (${prevCashierName}) السابقة — لم تكن فاتورة مسجّلة`
         : `مرحباً بك، تم التبديل لحساب: ${foundUser.name} 🌸`;
 
       return { 
         success: true, 
         user: foundUser, 
-        cartSafeguarded,
+        cartCleared,
         message: msg 
       };
     }
+    recordFailedLoginAttempt('nfc', 'بطاقة غير مسجّلة');
     return { success: false, message: `بطاقة NFC رقم (${nfcCardId}) غير مسجلة لأي مستخدم!` };
   };
 
@@ -6210,6 +6538,7 @@ export const AppProvider = ({ children }) => {
       localStorage.setItem('naif_pos_v3_user_shifts_reset_at', String(nowTs));
     } catch (e) {}
     syncEngine.saveKey('user_shifts', {}, true, nowTs, true);
+    purgeLocalKey('user_shifts', {}, nowTs);
 
     // 4. وردية المستخدم الحالي على الشاشة: مغلقة وصفرية
     const cleanClosedShift = {
@@ -6232,6 +6561,59 @@ export const AppProvider = ({ children }) => {
     return forcedRecords.length;
   };
 
+  // =======================================================================
+  //  إبلاغ صريح حين يفشل التصفير في السحابة
+  // =======================================================================
+  //  دوال التصفير تُرجع «تم بنجاح» فور مسح المحلي، ولا تنتظر السحابة. فإن
+  //  رفضت القواعد الحذف (جهاز داخل ببريد ليس بريد المدير) يرى المالك رسالة
+  //  نجاح والبيانات باقية في السحابة — وترجع كلها عند أول مزامنة. هذا
+  //  المُعالِج يجعل الفشل مسموعاً بدل أن يبقى في الطرفية.
+  // =======================================================================
+  useEffect(() => {
+    syncEngine.resetErrorHandler = (key, err) => {
+      const isPerm = String(err?.code || '').includes('permission-denied');
+      const msg = isPerm
+        ? `⛔ لم يُحذف «${key}» من السحابة: الحساب الحالي لا يملك صلاحية الحذف.
+
+` +
+          `المحلي مُسح، لكن البيانات ما زالت في السحابة وسترجع عند أول مزامنة.
+` +
+          `نفّذ التصفير من جهاز مسجّل ببريد المدير العام.`
+        : `⛔ لم يُحذف «${key}» من السحابة: ${err?.message || 'خطأ غير معروف'}
+
+` +
+          `المحلي مُسح، والبيانات السحابية ما زالت موجودة.`;
+      try { window.alert(msg); } catch (e) {}
+      try {
+        logAudit({
+          action: 'فشل تصفير سحابي',
+          target: key,
+          details: `code=${err?.code || ''} · ${err?.message || ''}`,
+          severity: 'high'
+        }, currentUser);
+      } catch (e) {}
+    };
+    return () => { syncEngine.resetErrorHandler = null; };
+  }, [currentUser]);
+
+  // =======================================================================
+  //  مسح مفتاح محلياً بالكامل — localStorage **و** IndexedDB معاً
+  // =======================================================================
+  //  كل دوال التصفير كانت تكتب `localStorage.setItem(key, '[]')` وحدها،
+  //  ولا واحدة منها تمسّ IndexedDB. و `saveAndSync` تكتب في الاثنين، فبقيت
+  //  في IndexedDB نسخةٌ كاملة من كل ما «حُذف»، تُحييها دالة الاسترجاع عند
+  //  أول إقلاع. المسح من مكان واحد لا يكفي حين يُقرأ من مكانين.
+  // =======================================================================
+  const purgeLocalKey = (key, emptyValue, stamp) => {
+    const empty = emptyValue !== undefined ? emptyValue : [];
+    try { localStorage.setItem(`naif_pos_v3_${key}`, JSON.stringify(empty)); } catch (e) {}
+    try { localStorage.setItem(`naif_pos_v3_${key}_reset_at`, String(stamp)); } catch (e) {}
+    try { localStorage.setItem(`naif_pos_v3_ts_${key}`, String(stamp)); } catch (e) {}
+    // IndexedDB: المكان الذي كان يُنسى — يُمسح بنفس الختم
+    try { idbSet(`naif_pos_v3_${key}`, empty); } catch (e) {}
+    try { idbSet(`naif_pos_v3_ts_${key}`, stamp); } catch (e) {}
+  };
+
   const resetSalesInvoices = (options = { clearHeld: false }) => {
     const nowTs = Date.now();
     forceCloseAllShifts('تصفير فواتير المبيعات');
@@ -6239,12 +6621,14 @@ export const AppProvider = ({ children }) => {
     localStorage.setItem('naif_pos_v3_invoices', '[]');
     localStorage.setItem('naif_pos_v3_invoices_reset_at', String(nowTs));
     syncEngine.saveKey('invoices', [], true, nowTs, true);
+    purgeLocalKey('invoices', [], nowTs);
 
     if (options?.clearHeld) {
       setHeldBills([]);
       localStorage.setItem('naif_pos_v3_held_bills', '[]');
       localStorage.setItem('naif_pos_v3_held_bills_reset_at', String(nowTs));
       syncEngine.saveKey('held_bills', [], true, nowTs, true);
+      purgeLocalKey('held_bills', [], nowTs);
     }
     clearCart();
     broadcastStoreActivity({
@@ -6262,6 +6646,7 @@ export const AppProvider = ({ children }) => {
     localStorage.setItem('naif_pos_v3_held_bills', '[]');
     localStorage.setItem('naif_pos_v3_held_bills_reset_at', String(nowTs));
     syncEngine.saveKey('held_bills', [], true, nowTs, true);
+    purgeLocalKey('held_bills', [], nowTs);
     return { success: true, message: 'تم تصفير الفواتير المعلقة سحابياً ومحلياً بنجاح 🌸' };
   };
 
@@ -6283,6 +6668,7 @@ export const AppProvider = ({ children }) => {
       localStorage.setItem('naif_pos_v3_receipts', '[]');
       localStorage.setItem('naif_pos_v3_receipts_reset_at', String(nowTs));
       syncEngine.saveKey('receipts', [], true, nowTs, true);
+      purgeLocalKey('receipts', [], nowTs);
     }
     return { success: true, message: 'تم تصفير ذمم وديون جميع العملاء سحابياً ومحلياً بنجاح 🌸' };
   };
@@ -6295,6 +6681,7 @@ export const AppProvider = ({ children }) => {
     localStorage.setItem('naif_pos_v3_receipts', '[]');
     localStorage.setItem('naif_pos_v3_receipts_reset_at', String(nowTs));
     syncEngine.saveKey('receipts', [], true, nowTs, true);
+    purgeLocalKey('receipts', [], nowTs);
     return { success: true, message: 'تم تصفير سندات القبض والصرف المالي سحابياً ومحلياً بنجاح 🌸' };
   };
 
@@ -6315,6 +6702,7 @@ export const AppProvider = ({ children }) => {
       localStorage.setItem('naif_pos_v3_purchases', '[]');
       localStorage.setItem('naif_pos_v3_purchases_reset_at', String(nowTs));
       syncEngine.saveKey('purchases', [], true, nowTs, true);
+      purgeLocalKey('purchases', [], nowTs);
     }
     return { success: true, message: 'تم تصفير مستحقات الموردين وسجل المشتريات سحابياً ومحلياً بنجاح 🌸' };
   };
@@ -6330,6 +6718,7 @@ export const AppProvider = ({ children }) => {
     localStorage.setItem('naif_pos_v3_drawer_tx', '[]');
     localStorage.setItem('naif_pos_v3_drawer_tx_reset_at', String(nowTs));
     syncEngine.saveKey('drawer_tx', [], true, nowTs, true);
+    purgeLocalKey('drawer_tx', [], nowTs);
 
     // 2. إغلاق قسري لكل الورديات المفتوحة ومسح محتواها وتسوية العهد
     forceCloseAllShifts('تصفير عهد وورديات الكاشيرات');
@@ -6354,6 +6743,7 @@ export const AppProvider = ({ children }) => {
     localStorage.setItem('naif_pos_v3_treasury_ledger', '[]');
     localStorage.setItem('naif_pos_v3_treasury_ledger_reset_at', String(nowTs));
     syncEngine.saveKey('treasury_ledger', [], true, nowTs, true);
+    purgeLocalKey('treasury_ledger', [], nowTs);
     return { success: true, message: 'تم تصفير دفتر تدقيق الخزينة والإيداعات البنكية سحابياً ومحلياً بنجاح 🌸' };
   };
 
@@ -6365,6 +6755,7 @@ export const AppProvider = ({ children }) => {
     localStorage.setItem('naif_pos_v3_expenses', '[]');
     localStorage.setItem('naif_pos_v3_expenses_reset_at', String(nowTs));
     syncEngine.saveKey('expenses', [], true, nowTs, true);
+    purgeLocalKey('expenses', [], nowTs);
     return { success: true, message: 'تم تصفير سجل المصروفات والنثريات سحابياً ومحلياً بنجاح 🌸' };
   };
 
@@ -6389,6 +6780,7 @@ export const AppProvider = ({ children }) => {
     localStorage.removeItem('naif_pos_v3_login_logs');
     localStorage.setItem('naif_pos_v3_login_logs_reset_at', String(nowTs));
     syncEngine.saveKey('login_logs', [], true, nowTs, true);
+    purgeLocalKey('login_logs', [], nowTs);
     return { success: true, message: 'تم مسح سجلات الدخول ومراقبة الأجهزة بنجاح 🌸' };
   };
 
@@ -6405,46 +6797,55 @@ export const AppProvider = ({ children }) => {
     localStorage.setItem('naif_pos_v3_invoices', '[]');
     localStorage.setItem('naif_pos_v3_invoices_reset_at', String(nowTs));
     syncEngine.saveKey('invoices', [], true, nowTs, true);
+    purgeLocalKey('invoices', [], nowTs);
 
     setHeldBills([]);
     localStorage.setItem('naif_pos_v3_held_bills', '[]');
     localStorage.setItem('naif_pos_v3_held_bills_reset_at', String(nowTs));
     syncEngine.saveKey('held_bills', [], true, nowTs, true);
+    purgeLocalKey('held_bills', [], nowTs);
 
     setPurchases([]);
     localStorage.setItem('naif_pos_v3_purchases', '[]');
     localStorage.setItem('naif_pos_v3_purchases_reset_at', String(nowTs));
     syncEngine.saveKey('purchases', [], true, nowTs, true);
+    purgeLocalKey('purchases', [], nowTs);
 
     setExpenses([]);
     localStorage.setItem('naif_pos_v3_expenses', '[]');
     localStorage.setItem('naif_pos_v3_expenses_reset_at', String(nowTs));
     syncEngine.saveKey('expenses', [], true, nowTs, true);
+    purgeLocalKey('expenses', [], nowTs);
 
     setDrawerTransactions([]);
     localStorage.setItem('naif_pos_v3_drawer_tx', '[]');
     localStorage.setItem('naif_pos_v3_drawer_tx_reset_at', String(nowTs));
     syncEngine.saveKey('drawer_tx', [], true, nowTs, true);
+    purgeLocalKey('drawer_tx', [], nowTs);
 
     setPaymentReceipts([]);
     localStorage.setItem('naif_pos_v3_receipts', '[]');
     localStorage.setItem('naif_pos_v3_receipts_reset_at', String(nowTs));
     syncEngine.saveKey('receipts', [], true, nowTs, true);
+    purgeLocalKey('receipts', [], nowTs);
 
     setTreasuryLedger([]);
     localStorage.setItem('naif_pos_v3_treasury_ledger', '[]');
     localStorage.setItem('naif_pos_v3_treasury_ledger_reset_at', String(nowTs));
     syncEngine.saveKey('treasury_ledger', [], true, nowTs, true);
+    purgeLocalKey('treasury_ledger', [], nowTs);
 
     setShiftsHistory([]);
     localStorage.setItem('naif_pos_v3_shifts_history', '[]');
     localStorage.setItem('naif_pos_v3_shifts_history_reset_at', String(nowTs));
     syncEngine.saveKey('shifts_history', [], true, nowTs, true);
+    purgeLocalKey('shifts_history', [], nowTs);
 
     setUserShifts({});
     localStorage.setItem('naif_pos_v3_user_shifts', '{}');
     localStorage.setItem('naif_pos_v3_user_shifts_reset_at', String(nowTs));
     syncEngine.saveKey('user_shifts', {}, true, nowTs, true);
+    purgeLocalKey('user_shifts', {}, nowTs);
 
     const cleanClosedShift = {
       id: `shift-closed-${currentUid}`,
@@ -6586,6 +6987,9 @@ export const AppProvider = ({ children }) => {
       switchUser,
       hasPermission,
       loginWithPin,
+      needsPinSetup,
+      setupInitialPin,
+      recordFailedLoginAttempt,
       loginWithEmail,
       logoutFirebase,
       firebaseUser,
@@ -6614,6 +7018,7 @@ export const AppProvider = ({ children }) => {
       allPendingFloatsTotal,
       depositCashToBank,
       getTreasurySummary,
+      computeOpenShiftCash,
       reconcilePosSettlement,
       reconcileAppSettlement,
       addDrawerMovement,

@@ -7,6 +7,25 @@ import { ShiftHeaderModal } from '../cashier/ShiftHeaderModal';
 import { NotificationsDrawerModal } from './NotificationsDrawerModal';
 import { UserSwitchModal } from '../auth/UserSwitchModal';
 
+// =========================================================================
+//  أسماء الأدوار كما تُعرض للمستخدم
+// =========================================================================
+//  كان العرض `role === 'admin' ? 'المدير' : 'كاشير'` — فيظهر المشرف
+//  والمحاسبة «كاشير» على شاشتهم وفي سجل الدخول. الاسم الخطأ في شريط
+//  دائم الظهور يُربك من يقرأ الشاشة ويُفسد سجلّ من كان يعمل.
+const ROLE_LABEL = {
+  admin: 'المدير',
+  supervisor: 'مشرف',
+  accountant: 'محاسب',
+  cashier: 'كاشير'
+};
+const ROLE_EMOJI = {
+  admin: '👑',
+  supervisor: '🛡️',
+  accountant: '📊',
+  cashier: '🌸'
+};
+
 export const Header = ({ currentTab, setCurrentTab, toggleSidebar, toggleCartDrawer }) => {
   const { 
     storeInfo, 
@@ -229,18 +248,27 @@ export const Header = ({ currentTab, setCurrentTab, toggleSidebar, toggleCartDra
           )}
         </div>
 
-        {/* زر تبديل المستخدم (يفتح واجهة التحقق بالرمز السري أو بطاقة NFC) */}
-        <div className="flex items-center gap-1.5">
-          <button
-            type="button"
-            onClick={() => setIsUserSwitchModalOpen(true)}
-            title="تبديل المستخدم بالرمز السري أو بطاقة NFC"
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[11px] font-black transition active:scale-95 shadow-xs bg-purple-950/70 hover:bg-purple-900 text-purple-200 hover:text-white border-purple-500/30"
-          >
-            <UserCheck className="w-3.5 h-3.5 text-purple-300" />
-            <span>تبديل المستخدم</span>
-          </button>
-        </div>
+        {/* =================================================================
+             اسم المستخدم = زر تبديل المستخدم
+             =================================================================
+             كان هنا زر «تبديل المستخدم» مستقلاً، وكان اسم الكاشير في
+             الشريط الذي تحته يفتح **نفس النافذة** — زرّان لفعل واحد،
+             والاسم يزاحم أزرار التنقّل (الرئيسية/الكاشير/الفواتير…) على
+             شاشة لمس ضيّقة. دُمج الاثنان هنا في الشريط العلوي: الاسم
+             نفسه هو زر التبديل، وصفّ التنقّل تحته صار خالصاً للتنقّل.
+             ================================================================= */}
+        <button
+          type="button"
+          onClick={() => setIsUserSwitchModalOpen(true)}
+          className="flex items-center gap-1.5 min-h-[30px] text-pink-100 bg-pink-950/80 px-3 py-1 rounded-xl border border-pink-500/30 shadow-xs cursor-pointer hover:bg-pink-900/90 transition active:scale-95"
+          title="المستخدم الحالي — انقر للتبديل بالرمز السري أو بطاقة NFC"
+        >
+          <span className="text-xs">{ROLE_EMOJI[currentUser?.role] || '🌸'}</span>
+          <span className="font-black text-[11px]">{currentUser?.name || 'المستخدم'}</span>
+          <span className="text-[10px] text-pink-300/80">({ROLE_LABEL[currentUser?.role] || 'كاشير'})</span>
+          {/* العلامة التي تجعل الاسم يُقرأ كزر تبديل لا كنصّ */}
+          <UserCheck className="w-3.5 h-3.5 text-purple-300 shrink-0" />
+        </button>
       </div>
 
       {/* الشريط الرئيسي (اسم المتجر في اليمين واسم المستخدم في اليسار بنفس الصف) */}
@@ -326,19 +354,8 @@ export const Header = ({ currentTab, setCurrentTab, toggleSidebar, toggleCartDra
           })()}
         </nav>
 
-        {/* الطرف الأيسر: اسم المستخدم الحالي في نفس الصف + أزرار السلة والفواتير المعلقة */}
+        {/* الطرف الأيسر: أزرار الخروج والسلة — اسم المستخدم انتقل للشريط الأعلى */}
         <div className="flex items-center gap-2 shrink-0">
-          {/* اسم المستخدم الحالي يسار في نفس الصف (النقر عليه يفتح التحقق والتبديل) */}
-          <div 
-            onClick={() => setIsUserSwitchModalOpen(true)}
-            className="flex items-center gap-1.5 text-pink-100 bg-pink-950/80 px-2.5 py-1 rounded-xl border border-pink-500/30 shadow-xs cursor-pointer hover:bg-pink-900/90 transition active:scale-95"
-            title="المستخدم الحالي (انقر لتبديل المستخدم)"
-          >
-            <span className="text-xs">{currentUser?.role === 'admin' ? '👑' : '🌸'}</span>
-            <span className="font-black text-xs">{currentUser?.name || 'المستخدم'}</span>
-            <span className="text-[10px] text-pink-300/80">({currentUser?.role === 'admin' ? 'المدير' : 'كاشير'})</span>
-          </div>
-
           {/* =================================================================
                تسجيل الخروج من حساب الجهاز
                =================================================================

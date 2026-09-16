@@ -30,14 +30,37 @@ service cloud.firestore {
       return email() == 'fl.ho2018@gmail.com';
     }
 
+    // =====================================================================
+    //  الأدوار — مطابقة لـ src/utils/authUsers.js
+    // =====================================================================
+    //  لماذا فُصلت الأدوار بعد أن كان الجميع `isStaff()` سواء:
+    //  القواعد تعرف الهوية **بالبريد وحده**؛ ودور المستخدم داخل البرنامج
+    //  (من رمز PIN) لا تراه السحابة إطلاقاً. فما دامت كل الأجهزة تدخل
+    //  ببريد واحد، فكل كاشير مديرٌ في السحابة: يحذف الفواتير ويعدّل
+    //  الأسعار والمستخدمين ويقرأ سجل التدقيق — من أدوات المطوّر مباشرةً،
+    //  متجاوزاً كل صلاحيات الواجهة لأنها تُفرَض في المتصفّح وحده.
+    //
+    //  ⚠️ هذه الكتلة بلا أثر عملي حتى يُنشأ لكل جهاز بريده الخاص في
+    //  Firebase Authentication ويُسجَّل به. قبل ذلك الجميع على بريد المدير
+    //  فيمرّون من `isAdmin()` على أي حال. كُتبت الآن كي لا يبقى تقسيم
+    //  الحسابات معلّقاً على تعديل قواعد لاحق يُنسى.
+    // =====================================================================
+    function isSupervisor() { return email() == 'f1@flower-house.com'; }
+    function isAccountant() { return email() == 'f2@flower-house.com'; }
+    function isCashier()    { return email() in ['f3@flower-house.com', 'f4@flower-house.com']; }
+
     function isStaff() {
-      return email() in [
-        'fl.ho2018@gmail.com',
-        'f1@flower-house.com',
-        'f2@flower-house.com',
-        'f3@flower-house.com',
-        'f4@flower-house.com'
-      ];
+      return isAdmin() || isSupervisor() || isAccountant() || isCashier();
+    }
+
+    // من يملك النظر في الأرقام المجمّعة: المدير والمحاسب والمشرف — لا الكاشير.
+    function canSeeFinancials() {
+      return isAdmin() || isAccountant() || isSupervisor();
+    }
+
+    // من يملك تعديل المخزون والأسعار: المدير والمشرف.
+    function canManageInventory() {
+      return isAdmin() || isSupervisor();
     }
 
     // هل بقي الحقل كما هو؟ (يعتبر الحقل الغائب في الطرفين "لم يتغيّر")
@@ -64,7 +87,7 @@ service cloud.firestore {
       //  الأسماء القديمة كانت غائبة عن المستند فتمرّ same() دائماً — أي
       //  أن حماية السعر/التكلفة كانت معطّلة. الآن الكاشير يعدّل الكمية
       //  والاسم لكن لا يمسّ سعر البيع أو التكلفة أو الباركود.
-      allow update: if isAdmin()
+      allow update: if canManageInventory()
                     || (isStaff() && same('sellingPrice') && same('costPrice')
                                   && same('barcode'));
       allow delete: if isAdmin();
@@ -109,7 +132,8 @@ service cloud.firestore {
       allow delete:         if isAdmin();
     }
     match /pos_purchases/{doc} {
-      allow read:   if isStaff();
+      // فاتورة الشراء تحمل سعر التكلفة — وهو ما نمنع الكاشير من رؤيته
+      allow read:   if canSeeFinancials();
       allow create: if isStaff();
       allow update: if isAdmin()
                     || (isStaff() && same('total') && same('createdAt'));
@@ -127,6 +151,29 @@ service cloud.firestore {
       allow create: if isStaff();
       allow update: if isAdmin()
                     || (isStaff() && same('amount') && same('createdAt'));
+      allow delete: if isAdmin();
+    }
+
+    // =====================================================================
+    //  4-ب. تالف وهالك الورد الطبيعي
+    // =====================================================================
+    //  كانت هذه المجموعة غائبة عن القواعد بالكامل بينما يزامنها
+    //  syncEngine (spoilage_logs ضمن SYNC_KEYS). والمجموعة غير المذكورة
+    //  مرفوضة افتراضياً — أي أن كل كتابة تالف كانت تفشل بصمت
+    //  بـ permission-denied، فيبقى السجل حبيس الجهاز الذي قيّده.
+    //
+    //  التالف خسارة مالية كالمصروف تماماً: يُقيَّد ولا تُعاد كتابة كميته
+    //  ولا قيمته بعد القيد — الخطأ يُصحَّح بحذف القيد من المدير لا بتعديله،
+    //  لأن تعديل الكمية بأثر رجعي يفكّ ارتباط القيد بخصم المخزون الذي تمّ.
+    // =====================================================================
+    match /pos_spoilage_logs/{doc} {
+      allow read:   if isStaff();
+      allow create: if isStaff()
+                    && request.resource.data.qty is number
+                    && request.resource.data.qty > 0;
+      allow update: if isAdmin()
+                    || (isStaff() && same('qty') && same('totalCostLoss')
+                                  && same('productId') && same('date'));
       allow delete: if isAdmin();
     }
 
@@ -167,7 +214,8 @@ service cloud.firestore {
     }
 
     match /pos_treasury_ledger/{doc} {
-      allow read:   if isStaff();
+      // دفتر الخزينة يكشف حركة نقد المتجر كلها — لا شأن للكاشير به
+      allow read:   if canSeeFinancials();
       allow create: if isStaff();
       allow update: if isAdmin();          // دفتر الخزينة: قيوده لا تُعدَّل
       allow delete: if isAdmin();
@@ -222,6 +270,12 @@ service cloud.firestore {
     // =====================================================================
     match /pos_backups/{doc} {
       allow read, write: if isAdmin();
+      // قطع النسخة في مجموعة فرعية: حدّ مستند Firestore ١ م.ب، والنسخة
+      // تتجاوزه حتماً مع نموّ المتجر. ووجودها في مجموعة فرعية يجعل قراءة
+      // قائمة النسخ خفيفة (المجموعات الفرعية لا تُجلب مع المستندات).
+      match /chunks/{chunk} {
+        allow read, write: if isAdmin();
+      }
     }
 
     // =====================================================================

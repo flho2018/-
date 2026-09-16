@@ -8,6 +8,7 @@ import { DEFAULT_PAYMENT_ICONS } from '../../../utils/paymentIcons';
 import { useApp } from '../../../context/AppContext';
 
 
+import { computeExpectedCash, sumDrawerCashIn, sumDrawerCashOut } from '../../../utils/useShiftMetrics';
 import { TreasuryDropModal } from '../TreasuryDropModal';
 
 export const CurrentShiftDrawerTab = ({ treasurySummary, isAdmin, setActiveTab }) => {
@@ -394,9 +395,9 @@ export const CurrentShiftDrawerTab = ({ treasurySummary, isAdmin, setActiveTab }
     });
 
     // حركات المصروف مرجعية للعرض فقط (تُخصم عبر totalCashExpenses)
-    const cashIn = userDrawerTx.filter(t => t.type === 'in' && t.subType !== 'expense' && !t.countedInStartCash && t.status !== 'pending').reduce((s, t) => s + (Number(t.amount) || 0), 0);
+    const cashIn = sumDrawerCashIn(userDrawerTx);
     // استبعاد حركات مرتجع المبيعات النقدية من cashOut لأنها تخصم صراحة عبر userCashRefunds
-    const cashOut = userDrawerTx.filter(t => (t.type === 'out' || t.type === 'treasury_drop') && t.subType !== 'expense' && t.category !== 'مرتجع مبيعات نقدية').reduce((s, t) => s + (Number(t.amount) || 0), 0);
+    const cashOut = sumDrawerCashOut(userDrawerTx);
     const treasuryDrops = userDrawerTx.filter(t => t.type === 'treasury_drop').reduce((s, t) => s + (Number(t.amount) || 0), 0);
 
     // المصروفات والمشتريات خلال الوردية (المصروفة نقداً من درج الكاشير حصراً)
@@ -444,7 +445,11 @@ export const CurrentShiftDrawerTab = ({ treasurySummary, isAdmin, setActiveTab }
       .filter(([id, m]) => id !== 'cash' && m.type !== 'cash')
       .reduce((s, [, m]) => s + (m.amount || 0), 0);
     const totalSales = netCashSales + nonCashSales;
-    const expectedCash = startCash + cashSales - userCashRefunds + cashIn - cashOut - totalCashExpenses - totalCashPurchases;
+    // صيغة واحدة مشتركة — انظر computeExpectedCash في useShiftMetrics.js
+    const expectedCash = computeExpectedCash({
+      startCash, cashSales, cashRefunds: userCashRefunds, cashIn, cashOut,
+      cashExpenses: totalCashExpenses, cashPurchases: totalCashPurchases
+    });
 
     // فحص تحصيلات وسداد الآجل (سندات القبض النقدية التي دخلت الدرج)
     const customerPaymentsCash = userDrawerTx
@@ -639,10 +644,16 @@ export const CurrentShiftDrawerTab = ({ treasurySummary, isAdmin, setActiveTab }
         printZReportHtml(target, storeInfo, users);
       } catch (err) {
         console.error('Print Z-Report Error:', err);
-        window.print();
+      // `window.print()` حُذف من هنا: كان «احتياطاً» يطبع **الصفحة كلها** لا
+      // المستند — فيُهدر ورقاً حرارياً ويُخرج شيئاً لا يشبه الإيصال. وهو كود
+      // ميت أصلاً: دوال الطباعة غير متزامنة ولا ترفض، فهذا الـ catch لا يعمل.
+      // الإعلان عن الفشل صار من `printHtmlDirectly` نفسها (نقطة الطباعة الوحيدة).
       }
     } else {
-      window.print();
+      // لا تقرير لنطبعه: رسالة صريحة بدل `window.print()` الذي كان يطبع
+      // **الصفحة كلها** على طابعة حرارية 80مم — ورقٌ يُهدر وخرجٌ لا يشبه
+      // التقرير، والكاشير لا يعرف أن شيئاً لم يكن جاهزاً أصلاً.
+      window.alert('⛔ لا يوجد تقرير وردية جاهز للطباعة.\nافتح وردية أو اختر وردية من السجل أولاً.');
     }
   };
 

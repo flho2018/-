@@ -26,17 +26,20 @@ export const Sidebar = ({ isOpen, onClose, currentTab, setCurrentTab }) => {
     expenses: { id: 'expenses', label: 'المصروفات والإيرادات', icon: DollarSign, desc: 'النثريات والمصاريف التشغيلية' },
     cashDrawer: { id: 'cashDrawer', label: 'حركة الخزينة والوردية', icon: LayoutDashboard, desc: 'فتح وإغلاق الوردية Z-Report' },
     reports: { id: 'reports', label: 'التقارير والإحصائيات', icon: PieChart, desc: 'الأرباح والإقرار الضريبي ZATCA' },
-    userReports: { id: 'userReports', label: 'تحليلات الكاشيرات وفريق العمل 👥', icon: Users, desc: 'ساعات العمل، المبيعات، ومعدل الإنجاز' },
+    // 'userReports' حُذف: كان يفتح <ReportsScreen defaultTab="staff" /> — أي نفس
+    // تبويب «أداء الكاشيرات» الموجود داخل التقارير. مدخلان لشاشة واحدة في
+    // قائمة يقرؤها الكاشير على شاشة ضيّقة.
     settings: { id: 'settings', label: 'إعدادات النظام والتهيئة', icon: Settings, desc: 'تخصيص النظام والطابعة والواتساب' },
   };
 
-  const savedOrder = storeInfo.menuItemsOrder || ['dashboard', 'ownerMobileDashboard', 'pos', 'invoices', 'products', 'customers', 'suppliers', 'expenses', 'cashDrawer', 'reports', 'userReports', 'settings'];
+  const savedOrder = storeInfo.menuItemsOrder || ['dashboard', 'ownerMobileDashboard', 'pos', 'invoices', 'products', 'customers', 'suppliers', 'expenses', 'cashDrawer', 'reports', 'settings'];
   let currentOrder = savedOrder.includes('ownerMobileDashboard')
     ? savedOrder
     : ['dashboard', 'ownerMobileDashboard', ...savedOrder.filter(k => k !== 'dashboard' && k !== 'ownerMobileDashboard')];
-  if (!currentOrder.includes('userReports')) {
-    currentOrder = [...currentOrder.filter(k => k !== 'settings'), 'userReports', 'settings'];
-  }
+  // 'userReports' يُرشَّح من الترتيب المحفوظ أيضاً: المتاجر التي حفظت القائمة
+  // قبل حذفه ما زالت تحمله في storeInfo.menuItemsOrder، وبلا تعريف له في
+  // allModules كان سيصيّر بنداً فارغاً.
+  currentOrder = currentOrder.filter(k => k !== 'userReports');
   const visibleModules = storeInfo.visibleModules || {};
 
   return (

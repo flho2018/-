@@ -235,7 +235,7 @@ export const StaffAndShiftsTab = ({
     return html;
   };
 
-  const handlePrintStaffReport = () => printHtmlDirectly(buildStaffReportHtml(), 'تقرير_أداء_الموظفين');
+  const handlePrintStaffReport = () => printHtmlDirectly(buildStaffReportHtml(), 'تقرير_أداء_الموظفين', { purpose: 'report', storeInfo });
 
   const handlePrintSingleStaffDossier = (staff) => {
     if (!staff) return;
@@ -331,7 +331,7 @@ export const StaffAndShiftsTab = ({
         </div>
       </div>
     `;
-    printHtmlDirectly(html, `تقرير_كاشير_${staff.name}`);
+    printHtmlDirectly(html, `تقرير_كاشير_${staff.name}`, { purpose: 'report', storeInfo });
   };
 
   const handleShareStaffWhatsApp = async () => {
@@ -536,7 +536,10 @@ export const StaffAndShiftsTab = ({
 
   const handlePrintZReportFromView = () => {
     if (!zReportExportRef.current) {
-      window.print();
+      // لا تقرير لنطبعه: رسالة صريحة بدل `window.print()` الذي كان يطبع
+      // **الصفحة كلها** على طابعة حرارية 80مم — ورقٌ يُهدر وخرجٌ لا يشبه
+      // التقرير، والكاشير لا يعرف أن شيئاً لم يكن جاهزاً أصلاً.
+      window.alert('⛔ تقرير Z غير معروض على الشاشة الآن.\nافتح تبويب تقرير الإغلاق أولاً ثم اطبع.');
       return;
     }
 
@@ -577,10 +580,13 @@ export const StaffAndShiftsTab = ({
         </html>
       `;
 
-      printHtmlDirectly(fullHtml, 'تقرير_Z_Report');
+      printHtmlDirectly(fullHtml, 'تقرير_Z_Report', { purpose: 'report', storeInfo });
     } catch (err) {
       console.error('Print Z-Report view error:', err);
-      window.print();
+      // `window.print()` حُذف من هنا: كان «احتياطاً» يطبع **الصفحة كلها** لا
+      // المستند — فيُهدر ورقاً حرارياً ويُخرج شيئاً لا يشبه الإيصال. وهو كود
+      // ميت أصلاً: دوال الطباعة غير متزامنة ولا ترفض، فهذا الـ catch لا يعمل.
+      // الإعلان عن الفشل صار من `printHtmlDirectly` نفسها (نقطة الطباعة الوحيدة).
     }
   };
 

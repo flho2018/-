@@ -67,26 +67,6 @@ export const connectQz = async ({ timeoutMs = 2500, retries = 0 } = {}) => {
   }
 };
 
-export const isQzConnected = async () => {
-  try {
-    const qz = await loadQz();
-    return qz.websocket.isActive();
-  } catch (e) {
-    return false;
-  }
-};
-
-export const disconnectQz = async () => {
-  try {
-    const qz = await loadQz();
-    if (qz.websocket.isActive()) await qz.websocket.disconnect();
-    lastStatus = { connected: false, checkedAt: Date.now(), error: null };
-    return { success: true };
-  } catch (e) {
-    return { success: false, error: e };
-  }
-};
-
 // =========================================================================
 //  اكتشاف الطابعات — بديل خانة نصّية يكتب فيها الموظف اسماً قد يخطئ فيه
 // =========================================================================
@@ -108,16 +88,9 @@ export const listPrinters = async () => {
   }
 };
 
-export const getDefaultPrinter = async () => {
-  const conn = await connectQz();
-  if (!conn.success) return '';
-  try {
-    const qz = await loadQz();
-    return (await qz.printers.getDefault()) || '';
-  } catch (e) {
-    return '';
-  }
-};
+// حُذفت من هنا `isQzConnected` و `disconnectQz` و `getDefaultPrinter`: كانت
+// مصدَّرة ولا يستدعيها أحد إطلاقاً — لا داخل الملف ولا خارجه. دوالٌّ معطّلة
+// بجانب دوال عاملة تُوهم القارئ أن هناك مساراً يعمل وهو لا يعمل.
 
 // =========================================================================
 //  الوجهة: كيف تُقرأ إعدادات الطابعة لكل غرض
@@ -131,7 +104,7 @@ export const getDefaultPrinter = async () => {
 //    name     → طابعة مثبَّتة مختارة بالاسم (محلية أو شبكة معرَّفة)
 //    network  → إرسال مباشر إلى IP ومنفذ (9100 غالباً) بلا تعريف مثبّت
 // =========================================================================
-export const PRINT_PURPOSES = ['invoice', 'report', 'barcode'];
+// (كان هنا PRINT_PURPOSES مصدَّراً ولا يستعمله أحد — الأغراض موصوفة أعلاه)
 
 const DEFAULT_TARGETS = {
   invoice: { mode: 'default', name: '', host: '', port: 9100 },

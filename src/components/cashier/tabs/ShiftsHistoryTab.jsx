@@ -47,7 +47,10 @@ export const ShiftsHistoryTab = ({ isAdmin }) => {
       printZReportHtml(shift, storeInfo, users);
     } catch (err) {
       console.error('Print Z-Report Error:', err);
-      window.print();
+      // `window.print()` حُذف من هنا: كان «احتياطاً» يطبع **الصفحة كلها** لا
+      // المستند — فيُهدر ورقاً حرارياً ويُخرج شيئاً لا يشبه الإيصال. وهو كود
+      // ميت أصلاً: دوال الطباعة غير متزامنة ولا ترفض، فهذا الـ catch لا يعمل.
+      // الإعلان عن الفشل صار من `printHtmlDirectly` نفسها (نقطة الطباعة الوحيدة).
     }
   };
 

@@ -36,3 +36,10 @@ desktop.ini
 .vscode/
 .idea/
 *.swp
+
+# مخرجات بناء قديمة لا تُبنى من هذا المصدر — كانت تُودَع بالخطأ فتُضخّم المستودع
+# firebase_live_app: نسخة منشورة قديمة (مثل dist تماماً)
+# electron-dist/electron: بقايا محاولة Electron المهجورة (القرار: QZ Tray لا Electron)
+firebase_live_app/
+electron-dist/
+electron/

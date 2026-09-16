@@ -136,7 +136,7 @@ export const PaymentsAndVatTab = ({
         </div>
       </div>
     `;
-    printHtmlDirectly(html, 'إقرار_ضريبة_ZATCA');
+    printHtmlDirectly(html, 'إقرار_ضريبة_ZATCA', { purpose: 'report', storeInfo });
   };
 
   // =========================================================================
@@ -368,7 +368,7 @@ export const PaymentsAndVatTab = ({
     return html;
   };
 
-  const handlePrintFinancialReconciliation = () => printHtmlDirectly(buildFinancialReconciliationHtml(), 'تقرير_التسوية_المالية_الموحد');
+  const handlePrintFinancialReconciliation = () => printHtmlDirectly(buildFinancialReconciliationHtml(), 'تقرير_التسوية_المالية_الموحد', { purpose: 'report', storeInfo });
 
   const handleShareFinancialWhatsApp = async () => {
     const waPhone = getManagerPhone(storeInfo);

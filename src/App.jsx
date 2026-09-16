@@ -12,17 +12,51 @@ import { FloatingBubbles } from './components/common/FloatingBubbles';
 import { PosRegister } from './components/pos/PosRegister';
 import { VirtualKeyboardWrapper } from './components/common/VirtualKeyboardWrapper';
 
-// تحميل تدريجي ذكي للشاشات لتسريع بدء تشغيل نقطة البيع
-const Dashboard = React.lazy(() => import('./components/dashboard/Dashboard').then(m => ({ default: m.Dashboard })));
-const InvoicesScreen = React.lazy(() => import('./components/invoices/InvoicesScreen').then(m => ({ default: m.InvoicesScreen })));
-const ProductsScreen = React.lazy(() => import('./components/products/ProductsScreen').then(m => ({ default: m.ProductsScreen })));
-const CustomersScreen = React.lazy(() => import('./components/customers/CustomersScreen').then(m => ({ default: m.CustomersScreen })));
-const SuppliersScreen = React.lazy(() => import('./components/suppliers/SuppliersScreen').then(m => ({ default: m.SuppliersScreen })));
-const ExpensesScreen = React.lazy(() => import('./components/expenses/ExpensesScreen').then(m => ({ default: m.ExpensesScreen })));
-const CashDrawerScreen = React.lazy(() => import('./components/cashier/CashDrawerScreen').then(m => ({ default: m.CashDrawerScreen })));
-const ReportsScreen = React.lazy(() => import('./components/reports/ReportsScreen').then(m => ({ default: m.ReportsScreen })));
-const SettingsScreen = React.lazy(() => import('./components/settings/SettingsScreen').then(m => ({ default: m.SettingsScreen })));
-const OwnerMobileDashboard = React.lazy(() => import('./components/dashboard/OwnerMobileDashboard').then(m => ({ default: m.OwnerMobileDashboard })));
+// =========================================================================
+//  تحميل تدريجي ذكي للشاشات — مع نجاة من النشر أثناء العمل
+// =========================================================================
+//  المشكلة التي رُصدت حيّاً مرتين: أسماء ملفات الشاشات مبصومة بالمحتوى،
+//  والنشر يستبدل ملفات الاستضافة فتختفي البصمات القديمة. فأي جهاز كاشير
+//  تبويبه مفتوح قبل النشر يطلب ملفاً لم يعد موجوداً **عند أول انتقال
+//  لشاشة لم يزرها بعد**، فتظهر شاشة خطأ وسط بيعة:
+//    Failed to fetch dynamically imported module: …/CashDrawerScreen-XXXX.js
+//
+//  العلاج: عند فشل الاستيراد الكسول نعيد تحميل الصفحة **مرة واحدة** فتُجلب
+//  index.html الجديدة ومعها البصمات الصحيحة. الحارس في sessionStorage يمنع
+//  حلقة إعادة تحميل لو كان الفشل لسبب آخر (انقطاع شبكة مثلاً)، فيصل
+//  المستخدم عندئذٍ لشاشة الخطأ الحالية بزرّيها كما كان.
+// =========================================================================
+const RELOAD_GUARD = 'naif_pos_chunk_reloaded_at';
+
+const lazyWithReload = (loader, pick) => React.lazy(() =>
+  loader()
+    .then(m => ({ default: pick(m) }))
+    .catch((err) => {
+      const isChunkError = /dynamically imported module|Importing a module script failed|Failed to fetch/i
+        .test(String(err?.message || ''));
+      let last = 0;
+      try { last = Number(sessionStorage.getItem(RELOAD_GUARD)) || 0; } catch (e) {}
+      // نافذة دقيقة واحدة: نشرٌ واحد يستحق إعادة تحميل واحدة لا سلسلة
+      if (isChunkError && Date.now() - last > 60000) {
+        try { sessionStorage.setItem(RELOAD_GUARD, String(Date.now())); } catch (e) {}
+        window.location.reload();
+        // لا نرمي الخطأ: الصفحة في طريقها للتحديث، ووعدٌ لا يُحسم أهدأ من شاشة خطأ تومض
+        return new Promise(() => {});
+      }
+      throw err;
+    })
+);
+
+const Dashboard = lazyWithReload(() => import('./components/dashboard/Dashboard'), m => m.Dashboard);
+const InvoicesScreen = lazyWithReload(() => import('./components/invoices/InvoicesScreen'), m => m.InvoicesScreen);
+const ProductsScreen = lazyWithReload(() => import('./components/products/ProductsScreen'), m => m.ProductsScreen);
+const CustomersScreen = lazyWithReload(() => import('./components/customers/CustomersScreen'), m => m.CustomersScreen);
+const SuppliersScreen = lazyWithReload(() => import('./components/suppliers/SuppliersScreen'), m => m.SuppliersScreen);
+const ExpensesScreen = lazyWithReload(() => import('./components/expenses/ExpensesScreen'), m => m.ExpensesScreen);
+const CashDrawerScreen = lazyWithReload(() => import('./components/cashier/CashDrawerScreen'), m => m.CashDrawerScreen);
+const ReportsScreen = lazyWithReload(() => import('./components/reports/ReportsScreen'), m => m.ReportsScreen);
+const SettingsScreen = lazyWithReload(() => import('./components/settings/SettingsScreen'), m => m.SettingsScreen);
+const OwnerMobileDashboard = lazyWithReload(() => import('./components/dashboard/OwnerMobileDashboard'), m => m.OwnerMobileDashboard);
 
 // مؤشر تحميل أنيق للشاشات الثانوية عند فتحها لأول مرة
 // شاشة تُعرض بدل المحتوى عند عدم وجود صلاحية

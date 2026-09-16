@@ -4,6 +4,140 @@ import { Database, Save, CheckCircle, Download, Upload, Clock, RotateCcw, Cloud,
 import { formatDate } from '../../utils/helpers';
 import { verifyPin } from '../../utils/security';
 import { idbGet, idbSet, safeLocalStorageSet, getStorageUsageEstimate } from '../../utils/idbStorage';
+import { syncEngine } from '../../utils/syncEngine';
+
+// =========================================================================
+//  لوحة النسخ الاحتياطية السحابية
+// =========================================================================
+//  الغياب الذي تعالجه: `runAutoCloudBackup` كان يرفع نسخة يومية إلى
+//  `pos_backups` فعلاً، لكن `listBackups` و `getBackup` و `deleteBackup`
+//  **لم يستدعها أي مكوّن في البرنامج**. أي أن النسخ كانت تُكتب ولا تُقرأ:
+//  لا تُعرض، ولا تُسترجع، ولا تُحذف. ونسخةٌ لا تُستعاد ليست نسخة احتياطية،
+//  هي مجرد تكلفة تخزين تُطمئن صاحبها بلا سبب.
+// =========================================================================
+export const CloudBackupsPanel = ({ onRestore, restoreArmed }) => {
+  const [rows, setRows] = React.useState(null);
+  const [busy, setBusy] = React.useState(false);
+  const [msg, setMsg] = React.useState(null);
+
+  const load = async () => {
+    setBusy(true); setMsg(null);
+    const res = await syncEngine.listBackups();
+    setBusy(false);
+    if (!res.success) { setMsg({ t: 'err', m: 'تعذّر جلب القائمة: ' + (res.error?.message || '') }); return; }
+    setRows(res.rows || []);
+  };
+
+  React.useEffect(() => { load(); }, []);
+
+  const handleRestore = async (row) => {
+    if (!restoreArmed) {
+      setMsg({ t: 'err', m: 'أدخل رمز المدير أعلاه أولاً — الاسترجاع يستبدل بيانات المتجر الحية.' });
+      return;
+    }
+    if (!window.confirm(
+      `استرجاع النسخة المؤرخة ${new Date(row.date).toLocaleString('ar-SA')}؟\n\n` +
+      `سيُستبدل كل ما في المتجر الآن بمحتوى هذه النسخة.`
+    )) return;
+
+    setBusy(true); setMsg(null);
+    const res = await syncEngine.getBackup(row.id);
+    setBusy(false);
+    if (!res.success) {
+      // نسخة ناقصة القطع أخطر من غائبة: استرجاعها يكتب بيانات مبتورة
+      setMsg({ t: 'err', m: res.incomplete
+        ? 'هذه النسخة ناقصة القطع ولا يصحّ استرجاعها — اختر نسخة أخرى.'
+        : 'تعذّر جلب بيانات النسخة: ' + (res.error?.message || '') });
+      return;
+    }
+    onRestore(res.data);
+  };
+
+  const handleDelete = async (row) => {
+    if (!window.confirm(`حذف النسخة المؤرخة ${new Date(row.date).toLocaleString('ar-SA')} نهائياً؟`)) return;
+    setBusy(true);
+    const res = await syncEngine.deleteBackup(row.id);
+    setBusy(false);
+    if (res.success) { setMsg({ t: 'ok', m: 'حُذفت النسخة.' }); load(); }
+    else setMsg({ t: 'err', m: 'تعذّر الحذف: ' + (res.error?.message || '') });
+  };
+
+  return (
+    <div className="bg-white/95 p-4 rounded-3xl border border-cyan-200 shadow-sm space-y-3">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div>
+          <h3 className="font-black text-sm text-slate-900 flex items-center gap-2">
+            <Cloud className="w-4 h-4 text-cyan-600" />
+            <span>النسخ الاحتياطية السحابية</span>
+          </h3>
+          <p className="text-[11px] text-slate-500 mt-0.5">
+            تُرفع تلقائياً مرة كل ٢٤ ساعة من جهاز المدير، وتراها كل الأجهزة.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={load}
+          disabled={busy}
+          className="px-3 py-1.5 rounded-xl bg-cyan-50 hover:bg-cyan-100 border border-cyan-200 text-cyan-800 text-[11px] font-black transition active:scale-95 disabled:opacity-50"
+        >
+          {busy ? 'جارٍ…' : 'تحديث القائمة 🔄'}
+        </button>
+      </div>
+
+      {msg && (
+        <div className={`text-[11px] font-bold px-3 py-2 rounded-xl border ${
+          msg.t === 'ok'
+            ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+            : 'bg-rose-50 text-rose-800 border-rose-200'
+        }`}>{msg.m}</div>
+      )}
+
+      {rows === null && <div className="text-[11px] text-slate-400 py-3 text-center">جارٍ التحميل…</div>}
+
+      {rows !== null && rows.length === 0 && (
+        <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 font-bold">
+          ⚠️ لا توجد أي نسخة سحابية بعد. النسخة التلقائية ترفع من جهاز المدير مرة كل ٢٤ ساعة.
+        </div>
+      )}
+
+      {rows !== null && rows.length > 0 && (
+        <div className="space-y-1.5 max-h-72 overflow-y-auto">
+          {rows.map(r => (
+            <div key={r.id} className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 flex-wrap">
+              <div className="min-w-0">
+                <div className="text-[11px] font-black text-slate-900">
+                  {r.date ? new Date(r.date).toLocaleString('ar-SA') : r.id}
+                </div>
+                <div className="text-[10px] text-slate-500 font-mono">
+                  {r.size || '—'} · {r.invoicesCount ?? '—'} فاتورة · {r.productsCount ?? '—'} صنف
+                  {r.source === 'auto' ? ' · تلقائية' : r.source ? ` · ${r.source}` : ''}
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => handleRestore(r)}
+                  disabled={busy}
+                  className="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-black transition active:scale-95 disabled:opacity-50"
+                >
+                  استرجاع
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDelete(r)}
+                  disabled={busy}
+                  className="px-2.5 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 text-[10px] font-black transition active:scale-95 disabled:opacity-50"
+                >
+                  حذف
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
 
 export const BackupSettingsTab = () => {
   const { 
@@ -29,6 +163,28 @@ export const BackupSettingsTab = () => {
   // رمز تأكيد الاستعادة — الاستعادة تستبدل بيانات المتجر الحية وترفعها
   // للسحابة، فتُعامَل بنفس صرامة مركز التصفير الذي يطلب رمز المدير.
   const [importPin, setImportPin] = useState('');
+  // تسليح الاسترجاع السحابي بنفس بوابة رمز المدير المستعملة للاستيراد من ملف:
+  // الاسترجاع من السحابة يستبدل بيانات المتجر في كل الأجهزة تماماً كالاستيراد،
+  // فلا يصحّ أن يكون أحدهما محميّاً والآخر مفتوحاً.
+  const [cloudRestorePin, setCloudRestorePin] = useState('');
+  const isAdminForCloud = currentUser?.role === 'admin' || currentUser?.isAdmin;
+  const cloudRestoreArmed = isAdminForCloud && verifyPin(String(cloudRestorePin || '').trim(), currentUser);
+
+  const handleCloudRestore = async (jsonStr) => {
+    try {
+      takeSnapshot('pre_cloud_restore_safety');
+      const res = importBackup(jsonStr, { mode: 'replace' });
+      if (res?.success) {
+        await pushAllToCloud();
+        showToast('🎉 ' + (res.message || 'تم استرجاع النسخة السحابية'));
+      } else {
+        alert(res?.message || 'تعذّر تطبيق النسخة المسترجعة');
+      }
+    } catch (e) {
+      alert('خطأ أثناء الاسترجاع: ' + (e?.message || e));
+    }
+  };
+
   const [importPinError, setImportPinError] = useState('');
 
   // إعدادات الجدولة
@@ -383,7 +539,38 @@ export const BackupSettingsTab = () => {
 
   return (
     <div className="space-y-5 animate-in fade-in text-xs font-cairo">
-      
+
+      {/* =================================================================
+           النسخ السحابية — عرض واسترجاع وحذف
+           =================================================================
+           كانت هذه النسخ تُرفع يومياً ولا يراها أحد ولا يستطيع استرجاعها:
+           دوال المحرّك الثلاث لم تكن مستدعاة من أي مكوّن. القسم هنا هو
+           الطريق الوحيد لاستعمالها فعلاً.
+           ================================================================= */}
+      <div className="space-y-2">
+        {isAdminForCloud && (
+          <div className="bg-amber-50 border border-amber-200 rounded-2xl px-3 py-2.5 flex flex-col sm:flex-row sm:items-center gap-2">
+            <label className="text-[11px] font-black text-amber-900 shrink-0">
+              رمز المدير لتفعيل الاسترجاع:
+            </label>
+            <input
+              type="password"
+              inputMode="numeric"
+              maxLength={4}
+              value={cloudRestorePin}
+              onChange={(e) => setCloudRestorePin(e.target.value.replace(/\D/g, ''))}
+              placeholder="••••"
+              className="px-3 py-1.5 rounded-xl border border-amber-300 bg-white text-center tracking-[0.4em] font-black text-sm w-28 focus:outline-hidden focus:ring-2 focus:ring-amber-400"
+              dir="ltr"
+            />
+            <span className={`text-[10px] font-black ${cloudRestoreArmed ? 'text-emerald-700' : 'text-amber-700'}`}>
+              {cloudRestoreArmed ? '✅ الاسترجاع مُفعّل' : 'الاسترجاع مقفل حتى يُدخل الرمز'}
+            </span>
+          </div>
+        )}
+        <CloudBackupsPanel onRestore={handleCloudRestore} restoreArmed={cloudRestoreArmed} />
+      </div>
+
       {/* رأس الصفحة مع أزرار الإجراء السريع */}
       <div className="bg-gradient-to-r from-slate-950 via-[#1e1b4b] to-[#31103f] text-white p-5 sm:p-6 rounded-3xl shadow-xl border border-indigo-500/30 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div className="flex items-center gap-3.5">

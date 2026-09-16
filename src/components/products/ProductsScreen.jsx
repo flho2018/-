@@ -282,13 +282,16 @@ export const ProductsScreen = () => {
   };
 
   // دالة إرسال وطباعة الملصقات الحرارية الذكية بباركود حقيقي قابل للمسح
-  const handlePrintThermalLabels = (product, copies = 1, size = '50x25') => {
+  const handlePrintThermalLabels = async (product, copies = 1, size = '50x25') => {
     if (!canPrintLabel) return denyMsg('طباعة ملصقات الباركود');
+    // `await` ضروري: الدالة صارت غير متزامنة بعد إضافة مسار TSPL، و
+    // try/catch حول استدعاء بلا await لا يلتقط رفض الوعد إطلاقاً — فكان
+    // أي فشل يمرّ صامتاً ولا يصل حتى إلى الارتداد.
     try {
-      printThermalBarcodeLabels({ product, copies, size, storeInfo });
+      await printThermalBarcodeLabels({ product, copies, size, storeInfo });
     } catch (err) {
       console.error('Thermal Barcode Print Error:', err);
-      window.print();
+      alert('تعذّرت طباعة الملصق: ' + (err?.message || 'خطأ غير معروف'));
     }
   };
 
@@ -1056,7 +1059,7 @@ export const ProductsScreen = () => {
                     type="button"
                     onClick={() => setFormData({ ...formData, barcode: generateSequentialBarcode(products) })}
                     className="px-3 py-2.5 bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-500 text-white rounded-xl font-bold text-xs flex items-center gap-1 shadow-sm transition active:scale-95 shrink-0"
-                    title="توليد كود باركود عشوائي فريد"
+                    title="توليد باركود تسلسلي فريد (الرقم التالي في التسلسل)"
                   >
                     <Sparkles className="w-3.5 h-3.5" />
                     <span>توليد باركود 🪄</span>

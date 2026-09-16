@@ -15,7 +15,7 @@
 // الفوائد: لا حد 1 ميجا، وكل بيعة تكتب المتغيّر فقط، ولا يكتب جهاز فوق آخر.
 // =========================================================================
 
-import { db } from './firebase';
+import { db, auth } from './firebase';
 import { doc, collection, setDoc, getDoc, getDocs, onSnapshot, writeBatch, updateDoc, increment } from 'firebase/firestore';
 
 // ملاحظة: البادئة pos_ تتجنّب الاصطدام بالمجموعات القديمة المهجورة
@@ -120,7 +120,8 @@ class SyncEngine {
     this.lastSyncedAt = localStorage.getItem('naif_pos_last_sync_time') || null;
     this.clientId = this.getOrCreateClientId();
     this.pendingSaves = {};
-    this.saveDebounceTimer = null;
+    // مؤقّت تأجيل **لكل مفتاح** لا مؤقّت واحد مشترك — انظر التعليق عند saveKey
+    this.saveDebounceTimers = {};
     this.unsubscribers = [];
     // آخر نسخة كُتبت لكل مفتاح: Map(docId → نص JSON) لحساب الفروق
     this.written = {};
@@ -211,6 +212,7 @@ class SyncEngine {
   //  الاستماع اللحظي
   // ---------------------------------------------------------------
   startRealtimeSync() {
+    if (!auth?.currentUser) return;
     if (this.isListening) return;
     this.isListening = true;
     this.setStatus('connected');
@@ -558,6 +560,7 @@ class SyncEngine {
   //  الحفظ
   // ---------------------------------------------------------------
   async saveKey(key, data, immediate = false, customTs = null, isReset = false) {
+    if (!auth?.currentUser) return;
     // أثناء تطبيق تحديث قادم من جهاز آخر (نافذة ٢٠٠ مللي ثانية) كان أي تغيير محلي
     // يُلغى نهائياً فلا يصل للأجهزة الأخرى إلا مع التغيير التالي — وهذا سبب رئيسي
     // لتأخر المزامنة. الآن نؤجّله بدل أن نُسقطه.
@@ -584,25 +587,70 @@ class SyncEngine {
       try {
         await this.flushKey(key, data, ts, isReset);
       } catch (err) {
+        // =================================================================
+        //  التصفير وحده يُبلِّغ عن فشله
+        // =================================================================
+        //  ابتلاع الخطأ صحيح للحفظ العادي (يُعاد مع التغيير التالي)، لكنه
+        //  كارثي مع التصفير: الشاشة كانت تقول «تم التصفير سحابياً ومحلياً
+        //  بنجاح 🌸» بينما السحابة لم تُمسّ — والمحلي مُسح فعلاً. فيظن
+        //  المالك أن البيانات ذهبت، وترجع كلها عند أول مزامنة من جهاز آخر.
+        //  يحدث فعلاً عند التصفير من جهاز داخل ببريد غير بريد المدير،
+        //  لأن قواعد الحذف `isAdmin()`.
+        // =================================================================
+        if (isReset) {
+          this.setStatus('error');
+          // دوال التصفير في AppContext لا تنتظر نتيجة saveKey (ولا تستطيع:
+          // بعضها يُصفّر عدة مفاتيح تباعاً)، فنُبلّغ عبر مُعالِج مسجَّل.
+          try { if (typeof this.resetErrorHandler === 'function') this.resetErrorHandler(key, err); } catch (e) {}
+          return { success: false, error: err, code: err?.code || '' };
+        }
         // سُجّل بالفعل داخل flushKey
       }
+      return { success: true };
+    }
+
+    // =====================================================================
+    //  تأجيل لكل مفتاح على حدة — لا مؤقّت واحد مشترك
+    // =====================================================================
+    //  كان هناك مؤقّت واحد لكل المفاتيح، وكل حفظ جديد يُلغيه ويبدأه من
+    //  الصفر. فمتجر مزدحم (بيع ← فاتورة + منتجات + وردية + حركة درج
+    //  متتابعة، ثم بيعة تالية قبل أن تمرّ ٤٠٠ مللي ثانية) **لا يُفرَّغ فيه
+    //  شيء إطلاقاً** ما دامت الحركة مستمرة: المؤقّت يُعاد ضبطه قبل أن يعمل
+    //  في كل مرة. أي أن أكثر اللحظات حاجةً للمزامنة هي أقلّها مزامنةً.
+    //  الآن: لكل مفتاح مؤقّته، فتأجيل المنتجات لا يؤخّر الفواتير، وحدّ
+    //  أقصى للتأجيل يضمن الإرسال ولو استمرّ الضغط.
+    // =====================================================================
+    this.pendingSaves[key] = { data, ts };
+
+    const timers = this.saveDebounceTimers;
+    const existing = timers[key];
+    // سقف التأجيل: مهما تتابعت التعديلات لا يتأخّر الإرسال أكثر من ثانيتين
+    const firstQueuedAt = existing?.firstQueuedAt || Date.now();
+    if (existing?.id) clearTimeout(existing.id);
+    if (Date.now() - firstQueuedAt >= 2000) {
+      delete timers[key];
+      const entry = this.pendingSaves[key];
+      delete this.pendingSaves[key];
+      this.flushKey(key, entry.data, entry.ts, false)
+        .catch(err => console.warn('[SyncEngine] تنبيه حفظ خلفي على ' + key + ':', err?.message));
       return;
     }
 
-    this.pendingSaves[key] = { data, ts };
-    if (this.saveDebounceTimer) clearTimeout(this.saveDebounceTimer);
-    this.saveDebounceTimer = setTimeout(() => {
-      const keys = Object.keys(this.pendingSaves);
-      keys.forEach(k => {
-        const entry = this.pendingSaves[k];
-        delete this.pendingSaves[k];
-        this.flushKey(k, entry.data, entry.ts, false)
-          .catch(err => console.warn('[SyncEngine] تنبيه حفظ خلفي على ' + k + ':', err?.message));
-      });
-    }, 400);
+    timers[key] = {
+      firstQueuedAt,
+      id: setTimeout(() => {
+        delete timers[key];
+        const entry = this.pendingSaves[key];
+        if (!entry) return;
+        delete this.pendingSaves[key];
+        this.flushKey(key, entry.data, entry.ts, false)
+          .catch(err => console.warn('[SyncEngine] تنبيه حفظ خلفي على ' + key + ':', err?.message));
+      }, 400)
+    };
   }
 
   async flushKey(key, data, ts, isReset) {
+    if (!auth?.currentUser) return;
     try {
       if (SINGLETON_KEYS.includes(key) || (!Array.isArray(data) && !MAP_KEYS.includes(key))) {
         await setDoc(doc(db, META_COLLECTION, key), {
@@ -800,65 +848,140 @@ class SyncEngine {
   // ---------------------------------------------------------------
   //  كانت اللقطات تُحفظ في localStorage فقط: أي في متصفح واحد. فكل
   //  متصفح يرى قائمة مختلفة، والأسوأ أن "نسخة احتياطية" تعيش داخل نفس
-  //  المتصفح الذي تحميه ليست نسخة احتياطية أصلاً — تُمسح معه.
+  //  المتصفح الذي تحميها ليست نسخة احتياطية أصلاً — تُمسح معه.
   //  الآن تُحفظ في السحابة: يراها كل الأجهزة وتنجو من مسح المتصفح.
+  //
+  //  ═══════════════════════════════════════════════════════════════
+  //  التجزئة: لماذا لا يُكتب كل شيء في مستند واحد
+  //  ═══════════════════════════════════════════════════════════════
+  //  حدّ مستند Firestore **١ ميجابايت صلب**. وكانت النسخة كلها تُكتب في
+  //  مستند واحد، فوُضع حارس يرفض الرفع فوق ٨٠٠ ك.ب. الحارس يمنع الانهيار
+  //  لكنه يحوّل المشكلة إلى أسوأ منها: متجر يكبر ← النسخة تتجاوز الحدّ ←
+  //  **تتوقّف النسخ نهائياً وصامتةً** والمالك يظنّ نفسه محمياً.
+  //
+  //  الآن: مستند صغير للبيانات الوصفية، و`data` مقسّمة على **مجموعة
+  //  فرعية** `chunks`. والمجموعة الفرعية اختيار مقصود لا تفصيل: قراءة
+  //  `pos_backups` لا تجلب المجموعات الفرعية، فقائمة النسخ صارت خفيفة
+  //  فعلاً بدل أن تُنزّل كل نسخة بكامل بياناتها لعرض أسمائها.
+  // ---------------------------------------------------------------
+  static BACKUP_CHUNK_BYTES = 700 * 1024;   // دون المليون بهامش أمان
+  static BACKUP_KEEP = 30;                  // كم نسخة تبقى قبل تنظيف الأقدم
+
   async saveBackup(record) {
+    const id = toDocId(record?.id || ('bkp-' + Date.now()), 0);
     try {
-      const id = toDocId(record?.id || ('bkp-' + Date.now()), 0);
-      await setDoc(doc(db, 'pos_backups', id), { ...record, id, _src: this.clientId, _ts: Date.now() });
+      const { data, ...meta } = record || {};
+      const str = typeof data === 'string' ? data : JSON.stringify(data ?? null);
+      const size = SyncEngine.BACKUP_CHUNK_BYTES;
+      const parts = [];
+      for (let i = 0; i < str.length; i += size) parts.push(str.slice(i, i + size));
+      if (parts.length === 0) parts.push('');
+
+      // القطع أولاً ثم المستند الوصفي: فلو انقطع الاتصال في المنتصف لا
+      // تظهر في القائمة نسخةٌ بيانُها ناقص ويُظنّ أنها صالحة للاسترجاع.
+      for (let i = 0; i < parts.length; i++) {
+        await setDoc(doc(db, 'pos_backups', id, 'chunks', String(i)), {
+          i, data: parts[i], _src: this.clientId, _ts: Date.now()
+        });
+      }
+      await setDoc(doc(db, 'pos_backups', id), {
+        ...meta, id,
+        chunkCount: parts.length,
+        bytes: str.length,
+        _src: this.clientId,
+        _ts: Date.now()
+      });
+
       this.markSynced();
-      return { success: true, id };
+      this.pruneBackups().catch(() => {});   // التنظيف لا يُفشل الرفع
+      return { success: true, id, chunks: parts.length };
     } catch (err) {
       console.error('[SyncEngine] ✖ فشل رفع النسخة الاحتياطية:', err?.code || '', err?.message || err);
-      return { success: false, error: err };
+      return { success: false, error: err, code: err?.code || '' };
     }
   }
 
-  // قائمة اللقطات بدون بيانات (خفيفة وسريعة)
+  // قائمة اللقطات بدون بيانات — خفيفة فعلاً لأن `data` في مجموعة فرعية
   async listBackups() {
     try {
       const snap = await getDocs(collection(db, 'pos_backups'));
       const rows = [];
       snap.forEach(d => {
         const { data, _src, _ts, ...meta } = d.data() || {};
-        rows.push({ ...meta, id: d.id, hasData: Boolean(data) });
+        rows.push({ ...meta, id: d.id, hasData: Boolean(data) || Number(meta.chunkCount) > 0 });
       });
       rows.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
       return { success: true, rows };
     } catch (err) {
       console.warn('[SyncEngine] تعذّر جلب قائمة النسخ:', err?.message);
-      return { success: false, rows: [] };
+      return { success: false, rows: [], error: err };
     }
   }
 
-  // جلب بيانات لقطة محددة (النص الكامل)
+  // جلب بيانات لقطة محددة (النص الكامل مُجمَّعاً من قطعه)
   async getBackup(id) {
     try {
-      const snap = await getDoc(doc(db, 'pos_backups', toDocId(id, 0)));
+      const docId = toDocId(id, 0);
+      const snap = await getDoc(doc(db, 'pos_backups', docId));
       if (!snap.exists()) return { success: false, data: null };
-      return { success: true, data: snap.data()?.data || null };
+      const meta = snap.data() || {};
+
+      // النسخ القديمة (قبل التجزئة) تحمل البيانات في المستند نفسه
+      if (typeof meta.data === 'string' && meta.data.length > 0) {
+        return { success: true, data: meta.data };
+      }
+
+      const chunksSnap = await getDocs(collection(db, 'pos_backups', docId, 'chunks'));
+      const parts = [];
+      chunksSnap.forEach(c => { const v = c.data() || {}; parts[Number(v.i) || 0] = v.data || ''; });
+      const expected = Number(meta.chunkCount) || parts.length;
+      if (parts.filter(x => typeof x === 'string').length < expected) {
+        // نسخة ناقصة أخطر من نسخة غائبة: استرجاعها يكتب بيانات مبتورة
+        return { success: false, data: null, incomplete: true, error: new Error('النسخة ناقصة القطع') };
+      }
+      return { success: true, data: parts.join('') };
     } catch (err) {
       console.warn('[SyncEngine] تعذّر جلب النسخة:', err?.message);
-      return { success: false, data: null };
+      return { success: false, data: null, error: err };
     }
   }
 
   async deleteBackup(id) {
     try {
+      const docId = toDocId(id, 0);
+      const chunksSnap = await getDocs(collection(db, 'pos_backups', docId, 'chunks'));
       const batch = writeBatch(db);
-      batch.delete(doc(db, 'pos_backups', toDocId(id, 0)));
+      chunksSnap.forEach(c => batch.delete(c.ref));
+      batch.delete(doc(db, 'pos_backups', docId));
       await batch.commit();
       return { success: true };
     } catch (err) {
       console.warn('[SyncEngine] تعذّر حذف النسخة:', err?.message);
-      return { success: false };
+      return { success: false, error: err };
     }
+  }
+
+  // ---------------------------------------------------------------
+  //  تنظيف النسخ الأقدم — سياسة استبقاء
+  // ---------------------------------------------------------------
+  //  بلا سياسة، نسخة يومية تعني آلاف المستندات خلال سنوات، وتكلفة قراءة
+  //  تتضخّم مع كل فتح لشاشة النسخ. نُبقي الأحدث ونحذف ما بعدها.
+  // ---------------------------------------------------------------
+  async pruneBackups(keep = SyncEngine.BACKUP_KEEP) {
+    const { success, rows } = await this.listBackups();
+    if (!success || rows.length <= keep) return { success: true, deleted: 0 };
+    const old = rows.slice(keep);
+    for (const r of old) await this.deleteBackup(r.id);
+    return { success: true, deleted: old.length };
   }
 
   // ---------------------------------------------------------------
   //  الرفع والسحب الكاملان
   // ---------------------------------------------------------------
   async pushAllLocal(stateSnapshot, isReset = false) {
+    if (!auth?.currentUser) {
+      return { success: false, message: 'يرجى تسجيل الدخول أولاً بالبريد وكلمة المرور لتفعيل المزامنة السحابية 🔒' };
+    }
     this.setStatus('syncing');
     const failed = [];
 
@@ -882,6 +1005,9 @@ class SyncEngine {
   }
 
   async pullAllRemote() {
+    if (!auth?.currentUser) {
+      return { success: false, data: null, message: 'يرجى تسجيل الدخول أولاً بالبريد وكلمة المرور لسحب البيانات من السحابة 🔒' };
+    }
     this.setStatus('syncing');
     const results = {};
     let found = 0;

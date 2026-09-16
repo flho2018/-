@@ -113,8 +113,29 @@ export const printHtmlDirectly = async (htmlContent, title = 'طباعة', routi
         setTimeout(executePrint, 600); // احتياطي أمان
       }
     } catch (globalErr) {
-      console.error('Fatal print error, invoking native window.print():', globalErr);
-      window.print();
+      // =====================================================================
+      //  الفشل يُعلَن هنا — في نقطة الطباعة الوحيدة
+      // =====================================================================
+      //  كانت الدالة تُرجع `false` صامتةً، و**لا أحد من مستدعيها الاثنين
+      //  والعشرين يفحص القيمة المُرجَعة**. فالكاشير يضغط «طباعة»، ولا يخرج
+      //  شيء، ولا تظهر رسالة — فيظنّ الطابعة معطّلة ويعيد المحاولة، أو
+      //  الأسوأ: يسلّم العميل بضاعة بلا فاتورة ظنّاً أنها طُبعت.
+      //  وسبعة من المستدعين يلفّون الاستدعاء بـ `try/catch` ثم
+      //  `window.print()` كاحتياط — وهو **كود ميت**: الدالة غير متزامنة ولا
+      //  ترفض أصلاً، فالـ catch لا يعمل أبداً.
+      //  الإعلان من هنا يغطّي المستدعين كلهم دفعةً واحدة — وهذا هو معنى أن
+      //  تكون نقطة الطباعة واحدة (§5.6).
+      //  ولا نستدعي `window.print()` بديلاً: يطبع **الصفحة كلها** لا الفاتورة،
+      //  فيُهدر ورقاً حرارياً ويُخرج شيئاً لا يشبه الإيصال.
+      // =====================================================================
+      console.error('[Print] فشل الطباعة:', globalErr);
+      try {
+        window.alert(
+          '⛔ تعذّرت الطباعة.\n\n' +
+          (globalErr?.message ? `السبب: ${globalErr.message}\n\n` : '') +
+          'المستند لم يُطبع. تحقّق من توصيل الطابعة ثم أعد المحاولة من سجل الفواتير.'
+        );
+      } catch (e) {}
       resolve(false);
     }
   });
@@ -364,7 +385,7 @@ export const buildReceiptHtml = ({ invoice, storeInfo, qrDataUrl, isTaxActive, t
 /**
  * توليد وطباعة ملصقات الباركود الحرارية (Barcode Thermal Labels & A4 Sticker Sheets)
  */
-export const printThermalBarcodeLabels = ({ product, copies = 1, size = '50x25', storeInfo }) => {
+export const printThermalBarcodeLabels = async ({ product, copies = 1, size = '50x25', storeInfo }) => {
   const bs = { ...storeInfo?.barcodeLabelSettings } || {};
   const isA4 = size === 'a4_3x8' || size === 'a4' || bs.paperType === 'a4';
 
@@ -651,6 +672,35 @@ export const printThermalBarcodeLabels = ({ product, copies = 1, size = '50x25',
       </body>
       </html>
     `;
+  }
+
+  // =======================================================================
+  //  مسار TSPL أولاً — ثم HTML احتياطاً
+  // =======================================================================
+  //  HTML يطبع «صفحة» لا «ملصقاً»: المتصفّح يفرض هوامشه، والتحجيم يختلف
+  //  بين جهاز وآخر، والباركود يُرسم صورةً فتتغيّر سماكة خطوطه مع الدقّة
+  //  فيصعب مسحه. TSPL يعطي الطابعة المقاس بالملّيمتر ويولّد الباركود
+  //  بخطوط الطابعة نفسها — وهذا هو الفرق بين ملصق يُمسح دائماً وملصق
+  //  «غير احترافي».
+  //  الارتداد إلى HTML تلقائي وصامت: TSPL لا يعمل بلا QZ، ولا يدعم
+  //  العربية، فلا يجوز أن يمنع الطباعة إن تعذّر.
+  // =======================================================================
+  try {
+    const { canUseTspl, buildTsplLabel } = await import('./tsplLabel');
+    if (canUseTspl(product, storeInfo)) {
+      const { printRawViaQz } = await import('./qzPrint');
+      const commands = buildTsplLabel({
+        product,
+        copies,
+        settings: storeInfo?.barcodeLabelSettings || {},
+        storeInfo
+      });
+      const res = await printRawViaQz(commands, { purpose: 'barcode', storeInfo });
+      if (res?.handled) return true;
+      console.warn('[Print] تعذّرت طباعة TSPL، سيُطبع الملصق بـ HTML:', res?.reason);
+    }
+  } catch (e) {
+    console.warn('[Print] طبقة TSPL غير متاحة، سيُطبع الملصق بـ HTML:', e?.message || e);
   }
 
   // الملصقات وحدها تذهب لطابعة الباركود المحفوظة، لا للطابعة الافتراضية

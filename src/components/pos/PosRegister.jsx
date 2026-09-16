@@ -974,13 +974,20 @@ export const PosRegister = ({ isCartOpen, setIsCartOpen }) => {
                 <ShoppingCart className="w-4 h-4" />
               </div>
               <div>
-                <h3 className="font-black text-sm text-slate-900 flex items-center gap-1.5">
+                <h3 className="font-black text-sm text-slate-900 flex items-center gap-2">
                   <span>الفاتورة</span>
+                  {/* =========================================================
+                       الحاسبة: مساحة لمس لا أيقونة زينة
+                       =========================================================
+                       كانت 24×24 بكسل داخل سطر العنوان — أقل من نصف الحد
+                       الأدنى لهدف اللمس (44 بكسل)، فيخطئها الإصبع ويضغط
+                       العنوان بجوارها. 44×44 مع هامش يفصلها عن النص. */}
                   <button
                     type="button"
                     onClick={() => setIsCalculatorOpen(true)}
                     title="آلة حاسبة سريعة"
-                    className="w-6 h-6 rounded-lg bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-sm leading-none flex items-center justify-center transition active:scale-95"
+                    aria-label="آلة حاسبة سريعة"
+                    className="w-11 h-11 shrink-0 rounded-xl bg-indigo-50 hover:bg-indigo-100 active:bg-indigo-200 border border-indigo-200 text-xl leading-none flex items-center justify-center transition active:scale-95 shadow-xs"
                   >
                     🧮
                   </button>

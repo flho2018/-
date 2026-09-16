@@ -1,17 +1,22 @@
 {
-  "name": "naif-pos-mobile",
+  "name": "bayt-alward-pos",
   "private": true,
-  "version": "1.0.0",
+  "version": "3.3.0",
   "type": "module",
+  "main": "electron/main.cjs",
+  "author": "بيت الورد للزهور والهدايا",
+  "description": "نظام نقاط البيع والكاشير الذكي — بيت الورد",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "package": "node ./zip_project.cjs",
     "preview": "vite preview",
-    "test": "node tests/financial_calculations.test.cjs && node tests/staff_performance.test.mjs",
+    "test": "node tests/financial_real.test.mjs && node tests/staff_performance.test.mjs && node tests/pin_setup_gate.test.mjs && node tests/expected_cash.test.mjs && node tests/tspl_label.test.mjs && node tests/reset_purge.test.mjs",
     "test:staff": "node tests/staff_performance.test.mjs",
     "emu": "firebase emulators:start --only firestore,auth",
-    "test:rules": "firebase emulators:exec --only firestore \"node tests/firestore.rules.test.cjs\""
+    "test:rules": "firebase emulators:exec --only firestore \"node tests/firestore.rules.test.cjs\"",
+    "electron:dev": "vite build && electron .",
+    "electron:build": "vite build && electron-builder --win"
   },
   "dependencies": {
     "clsx": "^2.1.1",
@@ -35,11 +40,52 @@
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
+    "electron": "^35.1.0",
+    "electron-builder": "^26.0.12",
     "firebase-tools": "^15.30.0",
     "postcss": "^8.5.2",
+    "puppeteer-core": "^25.11.0",
     "sharp": "^0.35.4",
     "tailwindcss": "^3.4.17",
     "vite": "^5.4.14",
     "vite-plugin-pwa": "^1.3.0"
+  },
+  "build": {
+    "appId": "com.baytalward.pos",
+    "productName": "بيت الورد",
+    "directories": {
+      "output": "electron-dist"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "public/icon-*.png",
+      "public/apple-touch-icon.png",
+      "public/favicon.png"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "public/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "public/icon.ico",
+      "uninstallerIcon": "public/icon.ico",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "بيت الورد POS",
+      "unicode": true
+    }
+  },
+  "allowScripts": {
+    "electron@35.1.0": true
   }
 }

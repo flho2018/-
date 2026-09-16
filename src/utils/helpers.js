@@ -48,34 +48,71 @@ export const formatDate = (dateStr) => {
   return `${dayName}، ${dateFormatted}`;
 };
 
-export const generateInvoiceNumber = (count = 1, user = null, existingInvoices = []) => {
+// =========================================================================
+//  رقم الفاتورة — رمز الجهاز لا رمز الكاشير
+// =========================================================================
+//  العطل الذي يعالجه هذا: كان الرمز يُشتقّ من معرّف مستخدم POS
+//  (`user-1` ← `C1`)، والتسلسل يُحسب من مصفوفة الفواتير المحلية.
+//  وكلاهما يفشل في نظام متعدّد الأجهزة:
+//
+//   • جهازان يعملان بنفس حساب الكاشير (وهو الوضع الطبيعي في المحل)
+//     يحملان نفس الرمز `C1` — فالرمز لا يميّز شيئاً.
+//   • المصفوفة المحلية تتأخّر عن السحابة بنبضة مزامنة كاملة، فالجهازان
+//     يريان نفس أعلى تسلسل ويُنتجان نفس الرقم في نفس الثانية.
+//
+//  النتيجة كانت فاتورتين برقم واحد — وتكرار رقم الفاتورة مخالفة في
+//  الفاتورة الإلكترونية، لا مجرد إزعاج في التقارير.
+//
+//  الحل: الرمز من `clientId` (المعرّف الثابت للجهاز في localStorage،
+//  وهو نفسه الذي تعتمده المزامنة للتمييز بين الأجهزة)، والتسلسل يُحسب
+//  **ضمن فواتير هذا الجهاز وحده**. فلا يحتاج جهازٌ أن يعرف ماذا باع
+//  الآخر كي يرقّم فاتورته — وهذا ما يجعل الرقم مناعةً من تأخّر المزامنة
+//  لا مجرد تقليلاً لاحتماله.
+//
+//  هوية الكاشير لم تضع: هي مخزَّنة في حقل `cashierId` على الفاتورة
+//  نفسها، وهو المصدر الصحيح لها — لا نصٌّ داخل الرقم لم يكن فريداً أصلاً.
+// =========================================================================
+
+/** رمز مختصر ثابت للجهاز مشتقّ من clientId — أربعة محارف base36 */
+export const deviceCodeFromClientId = (clientId) => {
+  const s = String(clientId || '');
+  if (!s) return '';
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return h.toString(36).toUpperCase().slice(-4).padStart(4, '0');
+};
+
+export const generateInvoiceNumber = (count = 1, user = null, existingInvoices = [], clientId = '') => {
   const today = new Date();
   const datePrefix = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, '0')}${String(today.getDate()).padStart(2, '0')}`;
-  
-  // رمز مميز للكاشير/الجهاز لتفادي أي تضارب تسلسلي بين الأجهزة المتعددة
-  let cashierCode = '';
-  if (user) {
-    const rawId = String(user.id || user.userId || '');
-    const num = rawId.replace(/\D/g, '');
-    cashierCode = num ? `C${num}` : (user.role === 'admin' ? 'M1' : 'C1');
-  }
 
-  // فحص أعلى تسلسل مسجل اليوم في فواتير النظام
+  const deviceCode = deviceCodeFromClientId(clientId);
+  const scope = deviceCode ? `INV-${datePrefix}-${deviceCode}-` : `INV-${datePrefix}-`;
+
+  // كل الأرقام المستعملة اليوم — حارس أخير ضد التكرار مهما كانت الصيغة.
+  // يشمل الفواتير بالصيغة القديمة (`INV-date-C1-0004`) فلا يتصادم رقم
+  // جديد مع رقم أصدره نفس الجهاز قبل هذا التغيير في نفس اليوم.
+  const usedToday = new Set();
   let maxSeq = 0;
-  if (Array.isArray(existingInvoices) && existingInvoices.length > 0) {
-    existingInvoices.forEach(inv => {
-      if (inv?.invoiceNumber && inv.invoiceNumber.includes(datePrefix)) {
-        const parts = inv.invoiceNumber.split('-');
-        const lastPart = parts[parts.length - 1];
-        const n = parseInt(lastPart, 10);
-        if (!isNaN(n) && n > maxSeq) maxSeq = n;
-      }
-    });
+
+  for (const inv of (Array.isArray(existingInvoices) ? existingInvoices : [])) {
+    const num = String(inv?.invoiceNumber || '');
+    if (!num.includes(datePrefix)) continue;
+    usedToday.add(num);
+    // التسلسل يُقاس ضمن نطاق هذا الجهاز وحده
+    if (deviceCode && !num.startsWith(scope)) continue;
+    const n = parseInt(num.split('-').pop(), 10);
+    if (Number.isFinite(n) && n > maxSeq) maxSeq = n;
   }
 
-  const finalSeq = Math.max(Number(count) || 1, maxSeq + 1);
-  const seq = String(finalSeq).padStart(4, '0');
-  return cashierCode ? `INV-${datePrefix}-${cashierCode}-${seq}` : `INV-${datePrefix}-${seq}`;
+  let next = Math.max(Number(count) || 1, maxSeq + 1);
+  let candidate = `${scope}${String(next).padStart(4, '0')}`;
+  // لا يدور أكثر من عدد فواتير اليوم — فالخروج مضمون
+  while (usedToday.has(candidate) && next < 99999) {
+    next += 1;
+    candidate = `${scope}${String(next).padStart(4, '0')}`;
+  }
+  return candidate;
 };
 
 // إنشاء مصفوفة TLV لهيئة الزكاة والضريبة والجمارك (ZATCA e-Invoice QR TLV)
@@ -133,22 +170,10 @@ export function generateZatcaTLV(sellerName, vatNumber, timeStamp, totalAmount, 
   }
 }
 // توليد باركود فريد قياسي للمنتج (EAN/Code128 format)
-export const generateBarcode = (prefix = '628') => {
-  const randomPart = Math.floor(100000000 + Math.random() * 900000000);
-  return `${prefix}${randomPart}`;
-};
+// `generateBarcode` (المولّد العشوائي القديم) حُذفت: حلّ محلّها
+// `generateSequentialBarcode` أدناه، ولم يبق لها مستدعٍ في المشروع.
+// الإبقاء على مولّد عشوائي بجانب تسلسلي دعوةٌ لأن يُستعمل الخطأ منهما.
 
-// =========================================================================
-//  باركود النظام — تسلسل من 0000001
-// =========================================================================
-//  سبعة أرقام بأصفار بادئة. الرقم التالي يُشتق من أكبر باركود تسلسلي موجود
-//  فعلاً بين المنتجات، لا من عدّاد محفوظ. السبب: العدّاد المنفصل يتعارض بين
-//  الأجهزة (جهازان يأخذان نفس الرقم)، ويضيع عند استعادة نسخة احتياطية.
-//  الاشتقاق من البيانات نفسها لا يمكن أن يتعارض مع ما هو مسجَّل فعلاً.
-//
-//  التمييز عن الباركودات القديمة: التسلسلي قيمته ≤ 999999 (أي يبدأ بصفر)،
-//  أما القديم مثل 6282001 فقيمته أكبر من مليون فلا يدخل التسلسل ولا يكسره.
-// =========================================================================
 export const SEQ_BARCODE_MAX = 999999;
 
 export const generateSequentialBarcode = (products = []) => {
