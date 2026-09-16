@@ -1197,8 +1197,26 @@ export const AppProvider = ({ children }) => {
         }
       };
 
+      // =====================================================================
+      //  المجموعات المالية كلها لا الفواتير وحدها
+      // =====================================================================
+      //  كان الاسترجاع يغطّي `invoices` و `shifts_history` فقط، بينما
+      //  `saveAndSync` تكتب **الستة عشر مفتاحاً** في IndexedDB. فحين تمتلئ
+      //  حصة localStorage (وهي ~٥ م.ب ومشتركة) تفشل الكتابة صامتةً
+      //  (`safeLocalStorageSet` يكتفي بتحذير في الطرفية)، ويقرأ `getSaved`
+      //  عند الإقلاع نسخةً بائتة من localStorage، **والنسخة السليمة في
+      //  IndexedDB موجودة ولا تُقرأ**.
+      //  السحابة تصحّح هذا عادةً — إلا لجهاز بلا إنترنت لحظة الامتلاء، وهو
+      //  بالضبط الجهاز الذي لا يملك مصدراً آخر يتعافى منه.
+      //  حارس ختم التصفير نفسه يحمي كل مفتاح، فلا يُحيي أحدها محذوفاً.
+      // =====================================================================
       await hydrate('invoices', setInvoices);
       await hydrate('shifts_history', setShiftsHistory);
+      await hydrate('drawer_tx', setDrawerTransactions);
+      await hydrate('receipts', setPaymentReceipts);
+      await hydrate('expenses', setExpenses);
+      await hydrate('purchases', setPurchases);
+      await hydrate('treasury_ledger', setTreasuryLedger);
     };
     hydrateLargeCollections();
   }, []);
@@ -5278,9 +5296,24 @@ export const AppProvider = ({ children }) => {
     //  إعادة الحساب من الفواتير والحركات والمصروفات والمشتريات تُخرج الرقم
     //  من دائرة ذلك السباق أصلاً — فالسجلات لا تتسابق، كلٌّ منها مستند مستقل.
     // =====================================================================
-    const openShiftsCashTotal = activeOpenShiftsList.reduce((sum, sh) => {
-      return sum + Math.max(0, computeOpenShiftCash(sh));
-    }, 0);
+    //  و `Math.max(0, …)` حُذف: درج سالب حقيقةٌ محاسبية لا خطأ يُخفى.
+    //  يحدث فعلاً حين تُسحب عهدة الكاشير للخزينة ثم يُصرف منه مرتجع نقدي.
+    //  تصفيرُه كان يجعل مجموع «نقد الكاشيرين» **يزيد عن الحقيقة**، فيبني
+    //  المدير قراره (إيداع بنكي، تغذية درج) على نقد ليس عنده. والأسوأ أن
+    //  العجز يختفي من الشاشة فلا يُلاحَق. الآن يُجمع كما هو، وتُحصى
+    //  الأدراج السالبة لتنبيه المدير عليها بالاسم.
+    const openShiftsCash = activeOpenShiftsList.map(sh => ({
+      shift: sh,
+      cash: computeOpenShiftCash(sh)
+    }));
+    const openShiftsCashTotal = openShiftsCash.reduce((sum, r) => sum + r.cash, 0);
+    const negativeDrawers = openShiftsCash
+      .filter(r => r.cash < -0.005)
+      .map(r => ({
+        userId: r.shift.userId,
+        name: r.shift.cashierName || resolveUserName(r.shift, users) || 'كاشير',
+        cash: r.cash
+      }));
 
     const cashierTotalCash = pendingHandoversTotal + openShiftsCashTotal;
     const totalActiveCashiersCount = pendingShifts.length + activeOpenShiftsList.length;
@@ -5488,6 +5521,7 @@ export const AppProvider = ({ children }) => {
       pendingShifts,
       pendingHandoversTotal,
       openShiftsCashTotal,
+      negativeDrawers,   // أدراج سالبة تحتاج متابعة المدير — لا تُخفى بالتصفير
       cashierTotalCash,
       totalActiveCashiersCount,
       activeOpenShiftsList,

@@ -483,6 +483,29 @@ export const ManagerTreasuryTab = ({ treasurySummary, isAdmin }) => {
                   <p className="text-[11px] text-amber-800/90 leading-relaxed">
                     نقدية بالدرج لدى الكاشيرات (وردية جارية + مقفلة) تظل بذمة الكاشير حتى يسحبها المدير.
                   </p>
+
+                  {/* =========================================================
+                       الأدراج السالبة تُعرض بالاسم لا تُصفَّر
+                       =========================================================
+                       كان المجموع يُحسب بـ `Math.max(0, …)` لكل وردية، فيختفي
+                       أي درج سالب من الرقم تماماً. والنتيجة مضاعفة: المجموع
+                       **يزيد عن الحقيقة** فيبني المدير عليه قرار إيداع أو
+                       تغذية، **والعجز نفسه لا يُلاحَق** لأنه غير ظاهر أصلاً.
+                       يحدث فعلاً حين تُسحب عهدة الكاشير ثم يُصرف منه مرتجع.
+                       ========================================================= */}
+                  {(treasurySummary.negativeDrawers || []).length > 0 && (
+                    <div className="mt-2 bg-rose-50 border border-rose-200 rounded-xl px-2.5 py-2 space-y-1">
+                      <div className="text-[11px] font-black text-rose-800">
+                        ⚠️ درج بالسالب — يحتاج تغذية أو تسوية:
+                      </div>
+                      {treasurySummary.negativeDrawers.map(d => (
+                        <div key={d.userId || d.name} className="flex items-center justify-between text-[11px] font-bold text-rose-900">
+                          <span>{d.name}</span>
+                          <span className="font-mono">{formatMoney(d.cash, storeInfo?.currency || 'ر.س')}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <div className="pt-3 mt-2 border-t border-amber-200/60 flex items-center justify-between">
                   <span className="text-[10px] text-amber-900 font-bold">

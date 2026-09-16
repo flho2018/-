@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Printer, Wifi, RefreshCw, CheckCircle2, AlertTriangle, Download, Tag, FileText } from 'lucide-react';
 import {
-  connectQz, listPrinters, testPrint, getQzStatus, describeTarget, getPrinterTarget
+  connectQz, listPrinters, testPrint, getQzStatus, describeTarget, getPrinterTarget, describeQzFailure
 } from '../../utils/qzPrint';
 
 // =========================================================================
@@ -105,6 +105,19 @@ export const PrintersSettingsPanel = ({ formData, setFormData, storeInfo }) => {
           {status.connected ? '🟢 QZ متصل' : '🟡 QZ غير متصل'}
         </div>
       </div>
+
+      {/* =================================================================
+           سبب عدم الاتصال — مشروحاً لا مدفوناً في طرفية المطوّر
+           =================================================================
+           كانت الطرفية تمتلئ بعشرات أخطاء Mixed Content ويبقى السبب الحقيقي
+           غير مرئي للمستخدم: شهادة QZ غير موثوقة على جهازه. ورسالة واحدة
+           تقول ماذا يفعل أنفع من خمسين سطر خطأ لا يقرؤها.
+           ================================================================= */}
+      {!status.connected && (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl px-3 py-2.5 text-[11px] leading-relaxed text-amber-900 font-bold">
+          {describeQzFailure(status.reason)}
+        </div>
+      )}
 
       <div className="flex flex-wrap gap-2 items-center">
         <label className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 cursor-pointer">

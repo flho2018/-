@@ -51,20 +51,51 @@ export const connectQz = async ({ timeoutMs = 2500, retries = 0 } = {}) => {
     }
     await qz.websocket.connect({ retries, delay: 0, keepAlive: 60, usingSecure: true })
       .catch(async (err) => {
-        // بعض التثبيتات لا تملك شهادة localhost صالحة، فنجرّب غير المؤمَّن
         if (qz.websocket.isActive()) return;
+        // =================================================================
+        //  على HTTPS لا تُجرَّب `ws://` أصلاً — المتصفّح يحظرها حظراً كاملاً
+        // =================================================================
+        //  الكود كان يرتدّ إلى الاتصال غير المؤمَّن دائماً. وعلى الموقع
+        //  المنشور (HTTPS) يرفض المتصفّح كل `ws://` بقاعدة Mixed Content،
+        //  فتمتلئ الطرفية بعشرات الأخطاء ويبقى السبب الحقيقي مدفوناً تحتها:
+        //  **شهادة QZ غير موثوقة على هذا الجهاز**. تجربةٌ محكومٌ عليها
+        //  بالفشل لا تُجرَّب — تُشرح.
+        // =================================================================
+        if (typeof window !== 'undefined' && window.location?.protocol === 'https:') {
+          throw new Error(
+            'تعذّر الاتصال الآمن بـ QZ Tray على هذا الجهاز. ' +
+            'الموقع يعمل على HTTPS، والمتصفّح يمنع الاتصال غير المؤمَّن منعاً كاملاً. ' +
+            'ثبّت شهادة QZ Tray الموثوقة على الجهاز (من إعدادات QZ ← Advanced ← Site Manager) ' +
+            'ثم أعد تشغيل المتصفّح.'
+          );
+        }
+        // على http (خادم تطوير محلي) الارتداد مشروع
         return qz.websocket.connect({ retries: 0, delay: 0, usingSecure: false });
       });
     lastStatus = { connected: true, checkedAt: Date.now(), error: null };
     return { success: true };
   } catch (err) {
+    const isHttps = typeof window !== 'undefined' && window.location?.protocol === 'https:';
     lastStatus = {
       connected: false,
       checkedAt: Date.now(),
-      error: err?.message || String(err)
+      error: err?.message || String(err),
+      // سبب مُصنَّف تعرضه شاشة الطابعات بدل رسالة تقنية غامضة
+      reason: isHttps ? 'https_cert' : 'not_running'
     };
-    return { success: false, error: err };
+    return { success: false, error: err, reason: lastStatus.reason };
   }
+};
+
+/** شرح السبب بالعربية لصاحب المتجر — لا رسالة مطوّر */
+export const describeQzFailure = (reason) => {
+  if (reason === 'https_cert') {
+    return 'QZ Tray غير موصول: الموقع على HTTPS ويحتاج **شهادة QZ موثوقة** على هذا الجهاز. '
+         + 'افتح QZ Tray ← Advanced ← Site Manager وأضف الموقع، ثم أعد تشغيل المتصفّح. '
+         + 'بدونها تعمل الطباعة العادية ولا يعمل توجيه الطابعات.';
+  }
+  return 'QZ Tray غير مثبَّت أو غير مشغَّل على هذا الجهاز. '
+       + 'الطباعة العادية تعمل، لكن توجيه الطابعات وطباعة الباركود بـ TSPL معطّلان.';
 };
 
 // =========================================================================
