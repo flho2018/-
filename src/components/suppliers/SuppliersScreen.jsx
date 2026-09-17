@@ -16,7 +16,8 @@ export const SuppliersScreen = () => {
     purchases,
     storeInfo,
     activeShift,
-    hasPermission
+    hasPermission,
+    confirmDialog
   } = useApp();
 
   const [activeTab, setActiveTab] = useState('suppliers'); // 'suppliers' or 'purchases'
@@ -83,12 +84,18 @@ export const SuppliersScreen = () => {
     setIsAddSupplierOpen(true);
   };
 
-  const handleDeleteSupplierClick = (supId, supName) => {
+  const handleDeleteSupplierClick = async (supId, supName) => {
     if (!hasPermission('suppliers_delete')) {
       alert('⛔ ليس لديك صلاحية لحذف الموردين!');
       return;
     }
-    if (confirm(`هل أنت متأكد من حذف المورد (${supName}) نهائياً من النظام؟`)) {
+    const ok = await confirmDialog({
+      title: 'حذف مورد',
+      message: `هل أنت متأكد من حذف المورد (${supName}) نهائياً من النظام؟`,
+      confirmText: 'حذف',
+      tone: 'danger'
+    });
+    if (ok) {
       deleteSupplier(supId);
     }
   };
@@ -177,12 +184,18 @@ export const SuppliersScreen = () => {
     setIsNewPurchaseOpen(true);
   };
 
-  const handleDeletePurchaseClick = (purId, purNumber) => {
+  const handleDeletePurchaseClick = async (purId, purNumber) => {
     if (!hasPermission('purchases_delete')) {
       alert('⛔ ليس لديك صلاحية لحذف فواتير المشتريات!');
       return;
     }
-    if (confirm(`هل أنت متأكد من حذف فاتورة المشتريات رقم (${purNumber})؟ سيتم خصم الكميات من المخزون وتعديل رصيد المورد.`)) {
+    const ok = await confirmDialog({
+      title: 'حذف فاتورة مشتريات',
+      message: `هل أنت متأكد من حذف فاتورة المشتريات رقم (${purNumber})؟\n\nسيتم خصم الكميات من المخزون وتعديل رصيد المورد.`,
+      confirmText: 'حذف',
+      tone: 'danger'
+    });
+    if (ok) {
       deletePurchaseInvoice(purId);
       if (viewingPurchase?.id === purId) setViewingPurchase(null);
     }

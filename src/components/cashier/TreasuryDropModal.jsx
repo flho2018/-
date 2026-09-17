@@ -11,7 +11,8 @@ export const TreasuryDropModal = ({ isOpen, onClose, currentDrawerCash = 0 }) =>
     addDrawerMovement,
     users,
     storeInfo,
-    currentUser
+    currentUser,
+    confirmDialog
   } = useApp();
 
   const startCash = activeShift?.startCash || storeInfo?.defaultStartCash || 500;
@@ -58,9 +59,12 @@ export const TreasuryDropModal = ({ isOpen, onClose, currentDrawerCash = 0 }) =>
     }
 
     if (numAmount > currentDrawerCash) {
-      const confirmExceed = window.confirm(
-        `⚠️ تنبيه: المبلغ المدخل (${formatMoney(numAmount, storeInfo?.currency || 'ر.س')}) أكبر من النقدية المتوفرة بالدرج (${formatMoney(currentDrawerCash, storeInfo?.currency || 'ر.س')}).\nهل أنت متأكد من المتابعة والترحيل؟`
-      );
+      const confirmExceed = await confirmDialog({
+        title: '⚠️ المبلغ أكبر من الدرج',
+        message: `المبلغ المدخل (${formatMoney(numAmount, storeInfo?.currency || 'ر.س')}) أكبر من النقدية المتوفرة بالدرج (${formatMoney(currentDrawerCash, storeInfo?.currency || 'ر.س')}).\n\nهل أنت متأكد من المتابعة والترحيل؟`,
+        confirmText: 'متابعة الترحيل',
+        tone: 'warning'
+      });
       if (!confirmExceed) return;
     }
 

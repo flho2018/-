@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Landmark, DollarSign, Clock, Printer, CheckCircle, Search, FileText, Sparkles, CreditCard, X, Users, Zap, Banknote } from 'lucide-react';
 import { formatMoney, formatDate, calculateSettlementCommission, getMethodCommissionSettings } from '../../../utils/helpers';
 // دالتا طباعة السندات كانتا مستخدمتين هنا بدون استيراد بعد تقسيم شاشة الخزينة
@@ -27,11 +27,13 @@ export const ManagerTreasuryTab = ({ treasurySummary, isAdmin }) => {
     reconcileAppSettlement,
     addExpense,
     fundCashierDrawer,
+    withdrawCashierDrawer,
     cancelPendingFloat,
     allPendingFloats,
     allPendingFloatsTotal,
     storeInfo,
-    computeOpenShiftCash
+    computeOpenShiftCash,
+    confirmDialog
   } = useApp();
 
   const [isBankDepositOpen, setIsBankDepositOpen] = useState(false);
@@ -103,7 +105,30 @@ export const ManagerTreasuryTab = ({ treasurySummary, isAdmin }) => {
     setIsFundDrawerOpen(true);
   };
 
-  const handleSaveDrawerFunding = (e) => {
+  // نافذة سحب نقد كاشير بعينه — يعمل سواء كانت ورديته مفتوحة أو مغلقة
+  const [withdrawTarget, setWithdrawTarget] = useState(null);
+  const [withdrawAmount, setWithdrawAmount] = useState('');
+  const [withdrawNotes, setWithdrawNotes] = useState('');
+
+  useEffect(() => {
+    if (withdrawTarget) {
+      setWithdrawAmount(String(withdrawTarget.total ?? ''));
+      setWithdrawNotes('');
+    }
+  }, [withdrawTarget]);
+
+  const handleWithdrawCashier = (e) => {
+    e.preventDefault();
+    if (!withdrawTarget) return;
+    const res = withdrawCashierDrawer({
+      cashierUserId: withdrawTarget.userId,
+      amount: Number(withdrawAmount) || 0,
+      notes: withdrawNotes,
+    });
+    if (res?.success) setWithdrawTarget(null);
+  };
+
+  const handleSaveDrawerFunding = async (e) => {
     e.preventDefault();
     const res = fundCashierDrawer({
       cashierUserId: fundCashierId,
@@ -115,12 +140,15 @@ export const ManagerTreasuryTab = ({ treasurySummary, isAdmin }) => {
     setIsFundDrawerOpen(false);
     setFundAmount('');
     setFundNotes('');
-    const wantPrint = window.confirm(
-      (res.isPendingFloat
-        ? `✅ سُجّلت عهدة بقيمة ${formatMoney(res.amount, storeInfo?.currency || 'ر.س')} باسم (${res.cashierName}) من ${res.sourceLabel}.\nوردية المستلم مغلقة الآن، فستكون هذه العهدة رصيده الافتتاحي المثبَّت عند فتح ورديته.`
-        : `✅ تمت تغذية درج (${res.cashierName}) بمبلغ ${formatMoney(res.amount, storeInfo?.currency || 'ر.س')} من ${res.sourceLabel}.`
-      ) + `\n\nهل تريد طباعة السند؟`
-    );
+    const wantPrint = await confirmDialog({
+      title: '✅ تمت العملية',
+      message: (res.isPendingFloat
+        ? `سُجّلت عهدة بقيمة ${formatMoney(res.amount, storeInfo?.currency || 'ر.س')} باسم (${res.cashierName}) من ${res.sourceLabel}.\nوردية المستلم مغلقة الآن، فستكون هذه العهدة رصيده الافتتاحي المثبَّت عند فتح ورديته.`
+        : `تمت تغذية درج (${res.cashierName}) بمبلغ ${formatMoney(res.amount, storeInfo?.currency || 'ر.س')} من ${res.sourceLabel}.`
+      ) + `\n\nهل تريد طباعة السند؟`,
+      confirmText: 'طباعة السند',
+      cancelText: 'بدون طباعة'
+    });
     if (wantPrint) {
       try { printDrawerFundingVoucherHtml(res, storeInfo); } catch (err) { console.error(err); }
     }
@@ -507,24 +535,43 @@ export const ManagerTreasuryTab = ({ treasurySummary, isAdmin }) => {
                     </div>
                   )}
                 </div>
+                {/*
+                  رصيد كل كاشير باسمه. كان يُعرض مجموع واحد لا يعرف المدير من
+                  يحمله، وزرُّ السحب لا يظهر إلا لوردية **مغلقة** معلّقة — فمن
+                  ورديته مفتوحة كان نقده غير قابل للسحب، وتقول الشاشة «العهد
+                  مستلمة بالكامل» وهو يحمل مئات الريالات.
+                */}
+                {(treasurySummary.cashierBalances || []).length > 0 && (
+                  <div className="mt-2 pt-2 border-t border-amber-200/60 space-y-1">
+                    {treasurySummary.cashierBalances.map(c => (
+                      <div key={c.userId} className="flex items-center justify-between gap-2 text-[11px]">
+                        <span className="font-bold text-amber-950 truncate">{c.name}</span>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <span className={`font-mono font-black ${c.total < 0 ? 'text-rose-700' : 'text-amber-900'}`}>
+                            {formatMoney(c.total, storeInfo?.currency || 'ر.س')}
+                          </span>
+                          {c.total > 0.005 && (
+                            <button
+                              type="button"
+                              onClick={() => setWithdrawTarget(c)}
+                              className="px-2 py-0.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-[10px] font-black transition active:scale-95"
+                              title={`سحب نقد ${c.name} إلى الخزينة`}
+                            >
+                              سحب 📥
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                 <div className="pt-3 mt-2 border-t border-amber-200/60 flex items-center justify-between">
                   <span className="text-[10px] text-amber-900 font-bold">
                     {treasurySummary.totalActiveCashiersCount > 0 ? `${treasurySummary.totalActiveCashiersCount} كاشير نشط` : 'لا توجد ورديات جارية'}
                   </span>
-                  {treasurySummary.pendingShifts.length > 0 ? (
-                    <button 
-                      type="button"
-                      onClick={() => {
-                        setHandoverShiftTarget(treasurySummary.pendingShifts[0]);
-                        setIsHandoverModalOpen(true);
-                      }}
-                      className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-[10px] font-black transition active:scale-95 shadow-xs flex items-center gap-1"
-                    >
-                      <span>سحب العهدة 📥</span>
-                      <span className="bg-white/20 px-1 rounded-full text-[9px]">{treasurySummary.pendingShifts.length}</span>
-                    </button>
-                  ) : (
-                    <span className="text-[10px] text-amber-700 font-medium">العهد مستلمة بالكامل</span>
+                  {(treasurySummary.cashierBalances || []).length === 0 && (
+                    <span className="text-[10px] text-amber-700 font-medium">لا نقد بذمة أي كاشير</span>
                   )}
                 </div>
                 {allPendingFloatsTotal > 0 && (
@@ -543,8 +590,14 @@ export const ManagerTreasuryTab = ({ treasurySummary, isAdmin }) => {
                           </span>
                           <button
                             type="button"
-                            onClick={() => {
-                              if (window.confirm(`استرجاع عهدة (${f.user || 'الكاشير'}) وإعادة المبلغ إلى مصدره؟`)) {
+                            onClick={async () => {
+                              const ok = await confirmDialog({
+                                title: 'استرجاع عهدة',
+                                message: `استرجاع عهدة (${f.user || 'الكاشير'}) وإعادة المبلغ إلى مصدره؟`,
+                                confirmText: 'استرجاع',
+                                tone: 'warning'
+                              });
+                              if (ok) {
                                 cancelPendingFloat(f.id);
                               }
                             }}
@@ -1848,6 +1901,74 @@ export const ManagerTreasuryTab = ({ treasurySummary, isAdmin }) => {
         onClose={() => { setIsHandoverModalOpen(false); setHandoverShiftTarget(null); }}
         shift={handoverShiftTarget}
       />
+
+      {/* سحب نقد كاشير بعينه — يعمل سواء كانت ورديته مفتوحة أو مغلقة */}
+      {withdrawTarget && (
+        <div className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <form
+            onSubmit={handleWithdrawCashier}
+            className="w-full max-w-sm bg-white rounded-3xl shadow-2xl overflow-hidden"
+          >
+            <div className="px-4 py-3 bg-gradient-to-l from-amber-600 to-orange-600 text-white flex items-center justify-between">
+              <h3 className="font-black text-sm">سحب عهدة الكاشير 📥</h3>
+              <button type="button" onClick={() => setWithdrawTarget(null)} className="w-8 h-8 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-4 space-y-3 text-xs">
+              <div className="p-3 rounded-2xl bg-amber-50 border border-amber-200">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-amber-950">{withdrawTarget.name}</span>
+                  <span className="font-mono font-black text-amber-900">
+                    {formatMoney(withdrawTarget.total, storeInfo?.currency || 'ر.س')}
+                  </span>
+                </div>
+                <div className="mt-1 text-[10px] text-amber-800 leading-relaxed">
+                  في الدرج الجاري: <strong className="font-mono">{formatMoney(withdrawTarget.openCash, storeInfo?.currency || 'ر.س')}</strong>
+                  {' · '}من ورديات مغلقة: <strong className="font-mono">{formatMoney(withdrawTarget.pendingCash, storeInfo?.currency || 'ر.س')}</strong>
+                </div>
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-800 mb-1">المبلغ المسحوب *</label>
+                <input
+                  type="number" step="any" required autoFocus
+                  value={withdrawAmount}
+                  onChange={(e) => setWithdrawAmount(e.target.value)}
+                  max={withdrawTarget.total}
+                  className="w-full px-4 py-3 bg-white border-2 border-amber-200 focus:border-amber-600 rounded-2xl font-black text-center text-lg text-slate-900 outline-none transition"
+                />
+                <p className="mt-1 text-[10px] text-slate-500 leading-relaxed">
+                  يُخصم من الدرج الجاري أولاً، ثم من ورديّاته المغلقة — ولا يمسّ أي كاشير آخر.
+                </p>
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-800 mb-1">ملاحظات</label>
+                <input
+                  type="text"
+                  value={withdrawNotes}
+                  onChange={(e) => setWithdrawNotes(e.target.value)}
+                  placeholder="سبب السحب أو رقم السند"
+                  className="w-full px-3 py-2.5 bg-white border-2 border-slate-200 focus:border-amber-500 rounded-2xl outline-none transition"
+                />
+              </div>
+            </div>
+
+            <div className="p-4 pt-0 flex gap-2">
+              <button type="button" onClick={() => setWithdrawTarget(null)}
+                className="flex-1 h-12 rounded-2xl bg-slate-100 hover:bg-slate-200 font-black text-slate-700 transition">
+                إلغاء
+              </button>
+              <button type="submit"
+                className="flex-[2] h-12 rounded-2xl bg-gradient-to-l from-amber-600 to-orange-600 hover:from-amber-700 text-white font-black transition active:scale-95">
+                تأكيد السحب للخزينة
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
     </>
   );

@@ -5,6 +5,7 @@ import { Trash2, Edit2, RotateCcw, X, MessageSquare } from 'lucide-react';
 import { formatMoney, formatDate, resolveUserName, buildShiftWhatsAppMessage, getWhatsAppUrls } from '../../../utils/helpers';
 import { shareDocument, getPreferredShareFormat, getManagerPhone } from '../../../utils/shareHelper';
 import { buildZReportHtml } from '../../../utils/printHelper';
+import { useApp } from '../../../context/AppContext';
 
 export const ShiftsHistoryLog = ({ 
   shiftsHistory, 
@@ -18,6 +19,9 @@ export const ShiftsHistoryLog = ({
   formatMoney, 
   formatDate 
 }) => {
+  // نوافذ التأكيد تُؤخذ من السياق مباشرةً لا من الخصائص: الشاشة تُستدعى من
+  // أكثر من مكان، وتمرير الدالة كخاصية في كل واحد منها يعني نسيانها في أحدها.
+  const { confirmDialog } = useApp();
   const [searchUser, setSearchUser] = useState('all');
   const [searchDateFrom, setSearchDateFrom] = useState('');
   const [searchDateTo, setSearchDateTo] = useState('');
@@ -111,7 +115,7 @@ export const ShiftsHistoryLog = ({
   };
 
   // حفظ التعديلات
-  const handleSaveEdit = (e) => {
+  const handleSaveEdit = async (e) => {
     e.preventDefault();
     if (!editingShift) return;
 
@@ -141,7 +145,7 @@ export const ShiftsHistoryLog = ({
     const newExpectedCash = newStartCash + cashSales + cashIn - cashOut - expenses - purchases;
     const newDifference = newActualCash - newExpectedCash;
 
-    updateShiftRecord(editingShift.id, {
+    await updateShiftRecord(editingShift.id, {
       startCash: newStartCash,
       openingCash: newStartCash,
       actualCash: newActualCash,
@@ -155,23 +159,35 @@ export const ShiftsHistoryLog = ({
   };
 
   // حذف وردية (مدير فقط)
-  const handleDeleteShift = (shiftId) => {
+  const handleDeleteShift = async (shiftId) => {
     if (!isAdmin) {
       alert('⛔ فقط المدير يمكنه حذف سجلات الورديات!');
       return;
     }
-    if (confirm('⚠️ هل تريد حذف هذه الوردية من السجل التاريخي؟ لا يمكن التراجع.')) {
+    const ok = await confirmDialog({
+      title: 'حذف وردية من السجل',
+      message: '⚠️ هل تريد حذف هذه الوردية من السجل التاريخي؟\n\nلا يمكن التراجع.',
+      confirmText: 'حذف',
+      tone: 'danger'
+    });
+    if (ok) {
       deleteShiftRecord(shiftId);
     }
   };
 
   // تصفير سجل الورديات بالكامل (مدير فقط)
-  const handleResetAllShifts = () => {
+  const handleResetAllShifts = async () => {
     if (!isAdmin) {
       alert('⛔ فقط المدير يمكنه تصفير سجل الورديات!');
       return;
     }
-    if (confirm(`⚠️ تحذير أمني: هل تريد بالتأكيد مسح وتصفير كافة سجلات الورديات السابقة (${(shiftsHistory || []).length} وردية)؟\n\nلا يمكن التراجع عن هذه الخطوة!`)) {
+    const ok = await confirmDialog({
+      title: '⚠️ تصفير سجل الورديات',
+      message: `هل تريد بالتأكيد مسح وتصفير كافة سجلات الورديات السابقة (${(shiftsHistory || []).length} وردية)؟\n\nلا يمكن التراجع عن هذه الخطوة.`,
+      confirmText: 'تصفير السجل',
+      tone: 'danger'
+    });
+    if (ok) {
       resetShiftsHistory();
     }
   };

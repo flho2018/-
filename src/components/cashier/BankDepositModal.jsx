@@ -17,7 +17,7 @@ const POPULAR_BANKS = [
 ];
 
 export const BankDepositModal = ({ isOpen, onClose, availableVaultCash = 0 }) => {
-  const { depositCashToBank, storeInfo, currentUser } = useApp();
+  const { depositCashToBank, storeInfo, currentUser, confirmDialog } = useApp();
 
   const [amount, setAmount] = useState('');
   const [bankName, setBankName] = useState(POPULAR_BANKS[0]);
@@ -44,7 +44,7 @@ export const BankDepositModal = ({ isOpen, onClose, availableVaultCash = 0 }) =>
     }
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     const numAmt = Number(amount) || 0;
 
@@ -54,9 +54,12 @@ export const BankDepositModal = ({ isOpen, onClose, availableVaultCash = 0 }) =>
     }
 
     if (numAmt > availableVaultCash && availableVaultCash > 0) {
-      const confirmExceed = window.confirm(
-        `تنبيه محاسبي: المبلغ المراد إيداعه (${formatMoney(numAmt, storeInfo?.currency || 'ر.س')}) أكبر من الكاش المتوفر حالياً بالخزينة (${formatMoney(availableVaultCash, storeInfo?.currency || 'ر.س')}). هل ترغب في المتابعة؟`
-      );
+      const confirmExceed = await confirmDialog({
+        title: 'تنبيه محاسبي',
+        message: `المبلغ المراد إيداعه (${formatMoney(numAmt, storeInfo?.currency || 'ر.س')}) أكبر من الكاش المتوفر حالياً بالخزينة (${formatMoney(availableVaultCash, storeInfo?.currency || 'ر.س')}).\n\nهل ترغب في المتابعة؟`,
+        confirmText: 'متابعة الإيداع',
+        tone: 'warning'
+      });
       if (!confirmExceed) return;
     }
 

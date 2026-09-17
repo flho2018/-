@@ -13,6 +13,12 @@ rules_version = '2';
 //  يكتب المستند كاملاً في كل مرة، فقائمة "hasOnly" كانت ستكسر المزامنة،
 //  أما تثبيت الحقول فيمرّ ما دامت القيم الحسّاسة لم تتغيّر.
 //
+//  وأُضيفت فوقه طبقتان لأن تثبيت الحقول وحده لا يكفي:
+//    • اتجاه الحالة: حقلٌ حرّ التغيير قد يكون أخطر من حقل مبلغ — قلب
+//      الفاتورة إلى "مرتجعة" يُخرج نقداً ويعيد مخزوناً بلا لمس أي رقم.
+//    • ملكية المستند: في مجموعة مستندُها لكل مستخدم (الورديات)، السؤال
+//      ليس "ماذا يُغيَّر" بل "مستندُ مَن يُغيَّر".
+//
 //  ⚠️ عند إضافة موظف: أنشئ حسابه في Firebase، أضف بريده في isStaff()
 //     وفي authUsers.js، ثم انشر القواعد من جديد.
 // =========================================================================
@@ -63,10 +69,90 @@ service cloud.firestore {
       return isAdmin() || isSupervisor();
     }
 
+    // إغلاق وردية كاشير واستلام عهدته عملٌ إداري يومي مشروع — لا عبث.
+    function canManageShifts() {
+      return isAdmin() || isSupervisor();
+    }
+
+    // إعدادات المتجر (اسمه، ضريبته، وسائل دفعه، توجيه طابعاته) قرار إداري،
+    // لأنها تسري على كل الأجهزة لا على الجهاز الذي حفظها.
+    function canManageStore() {
+      return isAdmin() || isSupervisor();
+    }
+
     // هل بقي الحقل كما هو؟ (يعتبر الحقل الغائب في الطرفين "لم يتغيّر")
     function same(field) {
       return !(field in request.resource.data) && !(field in resource.data)
         || request.resource.data[field] == resource.data[field];
+    }
+
+    // =====================================================================
+    //  ملكية مستند الوردية
+    // =====================================================================
+    //  حدّ لا تتجاوزه القواعد اليوم: السحابة لا تعرف إلا **بريد الجهاز**،
+    //  وصاحب الوردية يُعرَف برمز PIN داخل البرنامج — ولا حقل يربط الاثنين.
+    //  فالملكية تُقرأ من حقل اختياري `authEmail` في مستند المستخدم
+    //  (pos_users/<id>، وكتابته للمدير وحده). ما دام الحقل غائباً — وهو
+    //  الحال اليوم — يُعامَل كل موظف كصاحب الخانة فلا يتغيّر شيء عن الوضع
+    //  القائم؛ وبمجرّد كتابة الحقل لمستخدم يصير مستنده حكراً على بريده
+    //  بلا تعديل قواعد لاحق.
+    function linkedAuthEmail(uid) {
+      return exists(/databases/$(database)/documents/pos_users/$(uid))
+        ? get(/databases/$(database)/documents/pos_users/$(uid)).data.get('authEmail', '')
+        : '';
+    }
+
+    function ownsShiftSlot(uid) {
+      return linkedAuthEmail(uid) == '' || linkedAuthEmail(uid) == email();
+    }
+
+    //  مستند الوردية يسكن خانة صاحبه: اسم المستند = userId. وردية قديمة
+    //  بلا حقل userId تمرّ كما هي — لا نرفض بياناتٍ قائمة كُتبت قبل القاعدة.
+    function shiftFitsSlot(uid) {
+      return request.resource.data.get('userId', uid) == uid;
+    }
+
+    //  عدّادات المال في الوردية: هي بعينها ما يُحاسَب عليه الكاشير لحظة
+    //  الإقفال، فتغييرها من خارج جهازه = إخفاء عجز أو تحميله لمن لم يبع.
+    function shiftMoneyUnchanged() {
+      return same('startCash') && same('cashSales') && same('cardSales')
+          && same('creditSales') && same('cashIn') && same('cashOut')
+          && same('actualCash') && same('expectedCash') && same('difference')
+          && same('totalSales') && same('cashRefunds') && same('handoverAmount');
+    }
+
+    function shiftWasClosed() {
+      return resource.data.get('status', '') == 'closed'
+          || resource.data.get('isOpen', true) == false;
+    }
+
+    //  فتح وردية جديدة يكتب في نفس الخانة فوق آخر وردية مغلقة — ومعرّفها
+    //  مختلف. هذا مشروع. أما إعادة كتابة أرقام **نفس** الوردية المغلقة
+    //  فهي تغطية عجز بأثر رجعي، وبابها الإدارة وحدها.
+    function startsNewShift() {
+      return request.resource.data.get('id', '') != resource.data.get('id', '');
+    }
+
+    // =====================================================================
+    //  اتجاه حالة الفاتورة — §5.5 «الحالة المتقدّمة لا تُلغى»
+    // =====================================================================
+    //  كانت `status` و `paymentMethod` حرّتين تماماً بينما الإجمالي والأصناف
+    //  مثبّتة، فمن أدوات المطوّر: تُقلب فاتورة إلى `refunded` بلا مرتجع
+    //  حدث ولا اسم من نفّذه — فينقص المخزون المعاد وتُخصم مبيعات وردية
+    //  بلا أي أثر يدلّ على الفاعل. والاتجاه العكسي أسوأ: يمحو مرتجعاً حدث
+    //  فعلاً ويترك نقداً خرج من الدرج بلا سند يقابله.
+    //
+    //  القاعدة: الفاتورة تمشي في اتجاه واحد completed ⇒ refunded، ولا
+    //  تُقبل حالة المرتجع بلا ختم وقته واسم من نفّذه. تسري على الجميع
+    //  (المدير كذلك) لأن هذا ثابتٌ محاسبي لا صلاحية تُمنح. ومخرج المالك
+    //  عند الضرورة هو وحدة تحكّم Firebase — فكتاباتها لا تمرّ بالقواعد.
+    function invoiceStatusFlowOk() {
+      return same('status')
+          || (resource.data.get('status', 'completed') != 'refunded'
+              && request.resource.data.get('status', '') == 'refunded'
+              && request.resource.data.get('refundedAt', '') != ''
+              && (request.resource.data.get('refundedBy', '') != ''
+                  || request.resource.data.get('refundedByUserId', '') != ''));
     }
 
     // =====================================================================
@@ -94,9 +180,13 @@ service cloud.firestore {
     }
 
     match /pos_categories/{doc} {
-      allow read:           if isStaff();
-      allow create, update: if isStaff();
-      allow delete:         if isAdmin();
+      allow read:   if isStaff();
+      //  الإنشاء يبقى للموظف: جهاز يحمل تصنيفاً لا تعرفه السحابة يزرعه ولا
+      //  يُتلف شيئاً. أما التعديل فيغيّر شكل الكتالوج على كل الأجهزة، وهو
+      //  من عمل من يملك المخزون أصلاً — نفس بوابة تعديل المنتجات.
+      allow update: if canManageInventory();
+      allow create: if isStaff();
+      allow delete: if isAdmin();
     }
 
     // =====================================================================
@@ -111,24 +201,37 @@ service cloud.firestore {
       allow create: if isStaff()
                     && request.resource.data.total is number
                     && request.resource.data.total >= 0;
-      allow update: if isAdmin()
-                    || (isStaff() && same('total') && same('subtotal')
-                                  && same('items') && same('createdAt')
-                                  && same('invoiceNumber') && same('cashierId'));
+      //  شرطان متعامدان: اتجاه الحالة (يسري على الجميع) ثم ثبات الحقول
+      //  الحسّابية لغير المدير. وأُضيف `paymentMethod` إلى المثبَّتات لأن
+      //  قلب فاتورة نقدية إلى «شبكة» يُنقص النقد المتوقّع في الدرج بمقدارها
+      //  فيبتلع العجز بلا حذف ولا تعديل مبلغ — ولا مسار في البرنامج يغيّره
+      //  بعد الإصدار أصلاً.
+      allow update: if invoiceStatusFlowOk()
+                    && (isAdmin()
+                        || (isStaff() && same('total') && same('subtotal')
+                                      && same('items') && same('createdAt')
+                                      && same('invoiceNumber') && same('cashierId')
+                                      && same('paymentMethod')));
       allow delete: if isAdmin();
     }
 
     // =====================================================================
     //  3. العملاء والموردون والمشتريات
     // =====================================================================
+    //  `balance` هنا هو دَين العميل (وعند المورّد: ما له علينا). حارس النوع
+    //  ليس شكلياً: رصيد نصّي واحد يكفي ليصير مجموع الديون كله NaN في كل
+    //  تقرير يجمعها — وهو عطل وقع فعلاً في حساب إجمالي السلة. والقيمة تبقى
+    //  تُدار بالفرق من المحرّك (§5.1) لا بالكتابة المطلقة.
     match /pos_customers/{doc} {
       allow read:           if isStaff();
-      allow create, update: if isStaff();
+      allow create, update: if isStaff()
+                            && request.resource.data.get('balance', 0) is number;
       allow delete:         if isAdmin();
     }
     match /pos_suppliers/{doc} {
       allow read:           if isStaff();
-      allow create, update: if isStaff();
+      allow create, update: if isStaff()
+                            && request.resource.data.get('balance', 0) is number;
       allow delete:         if isAdmin();
     }
     match /pos_purchases/{doc} {
@@ -191,14 +294,38 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    //  فاتورة معلّقة = سلّة قبل الدفع: لا تُقيَّد في حساب ولا تُنقص مخزوناً
+    //  حتى تُدفع، ويحذفها الكاشير نفسه لحظة استئنافها (deleteRecord صريح من
+    //  البرنامج) — فتشديد حذفها يعطّل الاستئناف. تبقى مفتوحة للموظفين عن قصد،
+    //  ومعها حارس نوع للإجمالي كي لا تُحوَّل سلّة مشوّهة إلى فاتورة لاحقاً.
     match /pos_held_bills/{doc} {
-      allow read, create, update, delete: if isStaff();   // مؤقتة بطبيعتها
+      allow read:           if isStaff();
+      allow create, update: if isStaff()
+                            && request.resource.data.get('total', 0) is number;
+      allow delete:         if isStaff();
     }
 
-    match /pos_user_shifts/{doc} {
-      allow read:           if isStaff();
-      allow create, update: if isStaff();
-      allow delete:         if isAdmin();
+    // =====================================================================
+    //  4-ج. ورديات المستخدمين — لكل مستخدم خانة، ولا يكتب فيها جاره
+    // =====================================================================
+    //  اسم المستند هنا هو معرّف المستخدم نفسه (pos_user_shifts/user-3)، وكان
+    //  كل من يملك بريداً معتمداً يكتب فوق أي خانة منها. وعدّادات الوردية هي
+    //  ما يُحاسَب عليه الكاشير لحظة الإقفال: فجهاز يكتب فوق وردية كاشير آخر
+    //  يُخفي عجزاً أو يُحمّله لمن لم يبع، ولا يبقى أثر يدلّ على من غيّرها.
+    //
+    //  ما يبقى فعّالاً حتى قبل ربط الحسابات بالبريد (ownsShiftSlot أعلاه):
+    //    • الوردية لا تسكن خانة غير خانة صاحبها ولا تُنقل إلى مستخدم آخر.
+    //    • وردية مغلقة لا تُعاد كتابة أرقامها إلا من الإدارة — فتح وردية
+    //      جديدة في نفس الخانة يبقى مسموحاً لأن معرّفها مختلف.
+    match /pos_user_shifts/{uid} {
+      allow read:   if isStaff();
+      allow create: if isStaff() && shiftFitsSlot(uid);
+      allow update: if canManageShifts()
+                    || (isStaff()
+                        && shiftFitsSlot(uid)
+                        && (ownsShiftSlot(uid) || shiftMoneyUnchanged())
+                        && (!shiftWasClosed() || startsNewShift() || shiftMoneyUnchanged()));
+      allow delete: if isAdmin();
     }
 
     //  الوردية المغلقة مُقفلة: لا يعدّلها إلا المدير.
@@ -233,11 +360,25 @@ service cloud.firestore {
     //  6. الإعدادات
     // =====================================================================
     match /pos_meta/{doc} {
+      //  reset_marks يجب أن يقرأه كل جهاز: هو الحقيقة المشتركة التي تمنعه
+      //  من إعادة رفع ما مسحه تصفيرٌ جرى على جهاز آخر.
       allow read:  if isStaff();
-      //  active_shift + latest_activity يكتبهما كل جهاز أثناء عمله.
-      //  store_info و reset_marks للمدير وحده.
+
+      //  كان الشرط يسمح لغير المدير بـ active_shift و latest_activity فقط،
+      //  بينما محرّك المزامنة يكتب store_info في **نفس المجموعة**. فكل حفظ
+      //  إعدادات من جهاز غير المدير كان يُرفض بـ permission-denied: المستخدم
+      //  يضغط «حفظ»، ويرى إعداده محلياً، ولا يصل أي جهاز آخر أبداً. فشلٌ
+      //  صامت في مكان لا يشكّ فيه أحد. الآن لكل مستند في المجموعة كاتبٌ
+      //  معلوم بدل السماح المبهم:
+      //    • active_shift / latest_activity: حالة تشغيل لحظية يكتبها كل جهاز.
+      //    • store_info: إعدادات المتجر — تسري على الجميع فكاتبها إداري.
+      //    • reset_marks: ختم التصفير — يكتبه من يملك التصفير فعلاً، أي
+      //      المدير: الحذف في كل مجموعة `isAdmin()`، فختمٌ من غير المدير
+      //      كان سيُخفي عن كل الأجهزة سجلات ما زالت في السحابة لم تُحذف.
+      //    • أي مستند آخر: للمدير (لا نكسر مفتاحاً مفرداً يُضاف لاحقاً).
       allow write: if isAdmin()
-                   || (isStaff() && doc in ['active_shift', 'latest_activity']);
+                   || (isStaff() && doc in ['active_shift', 'latest_activity'])
+                   || (canManageStore() && doc == 'store_info');
     }
 
     // =====================================================================

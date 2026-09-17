@@ -82,7 +82,9 @@ export const ProductsScreen = () => {
     importProductsBatch,
     storeInfo,
     currentUser,
-    restoreProduct
+    restoreProduct,
+    confirmDialog,
+    promptDialog
   } = useApp();
 
   // عرض المنتجات المؤرشفة (المحذوفة سابقاً) بدل النشطة
@@ -226,7 +228,7 @@ export const ProductsScreen = () => {
     setIsAddModalOpen(true);
   };
 
-  const handleSave = (e) => {
+  const handleSave = async (e) => {
     e.preventDefault();
     if (!formData.name || !formData.sellingPrice) {
       alert('يرجى كتابة اسم المنتج وسعر البيع');
@@ -258,13 +260,18 @@ export const ProductsScreen = () => {
       }
       if (oldQty !== newQty) {
         const diff = newQty - oldQty;
-        reason = String(window.prompt(
-          `سبب تسوية كمية (${editingProduct.name}) إلزامي:\n\n` +
-          `الكمية الحالية: ${oldQty}\n` +
-          `الكمية الجديدة: ${newQty}  (${diff > 0 ? '+' : ''}${diff})\n\n` +
-          `مثال: جرد فعلي، تالف، هالك، خطأ إدخال سابق، هدية.`,
-          ''
-        ) || '').trim();
+        reason = String(await promptDialog({
+          title: 'سبب تسوية الكمية (إلزامي)',
+          message:
+            `الصنف: ${editingProduct.name}\n` +
+            `الكمية الحالية: ${oldQty}\n` +
+            `الكمية الجديدة: ${newQty}  (${diff > 0 ? '+' : ''}${diff})\n\n` +
+            `مثال: جرد فعلي، تالف، هالك، خطأ إدخال سابق، هدية.`,
+          placeholder: 'اكتب السبب…',
+          multiline: true,
+          required: true,
+          confirmText: 'حفظ التسوية'
+        }) || '').trim();
         if (!reason) {
           alert('⚠️ لم يُحفظ التعديل: سبب تسوية الكمية إلزامي.');
           return;
@@ -295,14 +302,19 @@ export const ProductsScreen = () => {
     }
   };
 
-  const handleDelete = (p) => {
+  const handleDelete = async (p) => {
     if (!canDelete) return denyMsg('حذف المنتجات');
-    if (confirm(
-      `سيُنقل المنتج (${p.name}) إلى الأرشيف.\n\n` +
-      `لن يظهر في شاشة البيع ولا في قوائم المخزون، لكنه يبقى محفوظاً ` +
-      `حتى لا تفقد الفواتير والتقارير القديمة اسمه وتكلفته.\n\n` +
-      `يمكنك استرجاعه لاحقاً من زر (الأرشيف). متابعة؟`
-    )) {
+    const ok = await confirmDialog({
+      title: 'أرشفة منتج',
+      message:
+        `سيُنقل المنتج (${p.name}) إلى الأرشيف.\n\n` +
+        `لن يظهر في شاشة البيع ولا في قوائم المخزون، لكنه يبقى محفوظاً ` +
+        `حتى لا تفقد الفواتير والتقارير القديمة اسمه وتكلفته.\n\n` +
+        `يمكنك استرجاعه لاحقاً من زر (الأرشيف). متابعة؟`,
+      confirmText: 'نقل للأرشيف',
+      tone: 'danger'
+    });
+    if (ok) {
       deleteProduct(p.id);
     }
   };
@@ -1425,8 +1437,14 @@ export const ProductsScreen = () => {
                   <span className="font-bold text-slate-800">{cat.name}</span>
                   <button
                     type="button"
-                    onClick={() => {
-                      if (confirm(`هل أنت متأكد من حذف تصنيف (${cat.name})؟`)) {
+                    onClick={async () => {
+                      const ok = await confirmDialog({
+                        title: 'حذف تصنيف',
+                        message: `هل أنت متأكد من حذف تصنيف (${cat.name})؟`,
+                        confirmText: 'حذف',
+                        tone: 'danger'
+                      });
+                      if (ok) {
                         deleteCategory(cat.id);
                       }
                     }}

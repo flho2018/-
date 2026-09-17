@@ -13,7 +13,8 @@ import {
   computeStaffPerformance,
   computeBonus,
   attachBonuses,
-  refundOwnerOf
+  refundOwnerOf,
+  computeInvoiceProfit
 } from '../src/utils/staffPerformance.js';
 
 let passed = 0, total = 0;
@@ -164,7 +165,7 @@ test('الفواتير القديمة بلا الحقل الجديد ترجع ل
 
 console.log('\n— مجمل الربح —');
 
-test('الربح = (البيع − التكلفة) × الكمية، ويُخصم منه ربح المرتجع', () => {
+test('بلا خصم ولا ضريبة: الربح = الإجمالي − التكلفة، ويُخصم منه ربح المرتجع', () => {
   const invoices = [
     inv({ id: 'a', cashierId: 'u1', date: '2026-03-01T10:00:00Z', items: [item(100, 60, 2)], total: 200 }),
     inv({ id: 'b', cashierId: 'u1', date: '2026-03-02T10:00:00Z', items: [item(100, 60, 1)], total: 100,
@@ -172,9 +173,129 @@ test('الربح = (البيع − التكلفة) × الكمية، ويُخص�
   ];
   const p = computeStaffPerformance({ users: USERS, invoices, period: 'all' });
   const s = p.staff.find(x => x.id === 'u1');
-  assert.strictEqual(s.grossProfit, 120, '(100−60)×2 + (100−60)×1 = 120');
+  assert.strictEqual(s.grossProfit, 120, '(200−120) + (100−60) = 120');
   assert.strictEqual(s.refundedProfit, 40);
   assert.strictEqual(s.netProfit, 80);
+});
+
+// =========================================================================
+//  الربح بعد الخصم والضريبة
+// =========================================================================
+//  كل رقم متوقَّع هنا محسوب يدوياً في التعليق فوق حالته — لا يُصحَّح
+//  الاختبار بنسخ ما يُخرجه الكود، فذلك يجعله يوافق العطل لا يكشفه.
+//  والتعريف المرجعي هو نفسه المستعمل في التقارير المالية:
+//    الربح = (الإجمالي − الضريبة) − تكلفة البضاعة المباعة
+// =========================================================================
+console.log('\n— الربح بعد الخصم والضريبة —');
+
+const r2 = (n) => Math.round(n * 100) / 100;
+
+// صنف بـ ١٠٠ (تكلفة ٦٠)، خصم عام ٢٠، والأسعار شاملة ضريبة ١٥٪:
+//   بعد الخصم = ٨٠ ، الوعاء = ٨٠ ÷ ١٫١٥ = ٦٩٫٥٧ ، الضريبة = ١٠٫٤٣
+//   الربح = ٨٠ − ١٠٫٤٣ − ٦٠ = ٩٫٥٧      (الصيغة القديمة كانت تقول ٤٠)
+const INV_DISCOUNT_TAX_INCL = {
+  id: 'p1', cashierId: 'u1', date: '2026-03-01T10:00:00Z', status: 'completed',
+  items: [{ price: 100, qty: 1, discount: 0, costAtSale: 60 }],
+  subtotal: 100, discount: 20,
+  taxRate: 15, taxInclusive: true, taxEnabled: true,
+  taxableAmount: 69.57, taxAmount: 10.43, total: 80
+};
+
+test('خصم عام + ضريبة شاملة: ٩٫٥٧ لا ٤٠', () => {
+  const p = computeStaffPerformance({ users: USERS, invoices: [INV_DISCOUNT_TAX_INCL], period: 'all' });
+  const s = p.staff.find(x => x.id === 'u1');
+  assert.strictEqual(r2(s.grossProfit), 9.57);
+  assert.notStrictEqual(r2(s.grossProfit), 40, 'الصيغة القديمة (السعر − التكلفة) × الكمية');
+  // الربح قابل للمراجعة بالجمع: الوعاء بلا ضريبة ٦٩٫٥٧ ، التكلفة ٦٠
+  assert.strictEqual(r2(s.salesExTax), 69.57);
+  assert.strictEqual(s.cogs, 60);
+  assert.strictEqual(r2(s.salesExTax - s.cogs), r2(s.grossProfit));
+});
+
+test('خصم البند وحده (بلا ضريبة): ١٠٠ خصمها ٢٠ وتكلفتها ٦٠ ← ربح ٢٠', () => {
+  // البند نفسه مخصوم ٢٠، فالإجمالي ٨٠ والضريبة معطّلة: الربح = ٨٠ − ٦٠ = ٢٠
+  const invoice = {
+    id: 'p2', cashierId: 'u1', date: '2026-03-01T10:00:00Z', status: 'completed',
+    items: [{ price: 100, qty: 1, discount: 20, costAtSale: 60 }],
+    subtotal: 100, discount: 20,
+    taxRate: 0, taxEnabled: false, taxAmount: 0, total: 80
+  };
+  assert.strictEqual(r2(computeInvoiceProfit(invoice).profit), 20);
+});
+
+test('ضريبة غير شاملة: تُضاف فوق السعر فلا تُخصم من ربح الموظف مرتين', () => {
+  // صنف ١٠٠ (تكلفة ٦٠) + ضريبة ١٥٪ فوقه: الإجمالي ١١٥ ، الضريبة ١٥
+  //   الربح = ١١٥ − ١٥ − ٦٠ = ٤٠ — وهو نفس ما تعطيه الصيغة القديمة هنا،
+  //   لأن السعر المعلن في هذا النظام صافٍ أصلاً.
+  const invoice = {
+    id: 'p3', cashierId: 'u1', date: '2026-03-01T10:00:00Z', status: 'completed',
+    items: [{ price: 100, qty: 1, discount: 0, costAtSale: 60 }],
+    subtotal: 100, discount: 0,
+    taxRate: 15, taxInclusive: false, taxEnabled: true,
+    taxableAmount: 100, taxAmount: 15, total: 115
+  };
+  assert.strictEqual(r2(computeInvoiceProfit(invoice).profit), 40);
+});
+
+test('مرتجع كامل يُصفّر الربح بالضبط (لا بقيّة يُصرف عليها بونص)', () => {
+  const refunded = {
+    ...INV_DISCOUNT_TAX_INCL,
+    status: 'refunded',
+    refundedAt: '2026-03-02T10:00:00Z',
+    refundChargedUserId: 'u1'
+  };
+  const p = computeStaffPerformance({ users: USERS, invoices: [refunded], period: 'all' });
+  const s = p.staff.find(x => x.id === 'u1');
+  assert.strictEqual(r2(s.grossProfit), 9.57);
+  assert.strictEqual(r2(s.refundedProfit), 9.57, 'المرتجع بنفس تعريف البيع');
+  assert.strictEqual(r2(s.netProfit), 0);
+});
+
+test('فاتورة قديمة بلا إجمالي محفوظ: يُعاد بناؤها خصماً ثم ضريبة', () => {
+  // صنفان من نفس المنتج (١٠٠ × ٢ = ٢٠٠، تكلفة ٦٠ × ٢ = ١٢٠)، خصم ٢٠،
+  // وأسعار شاملة ١٥٪:  (٢٠٠ − ٢٠) ÷ ١٫١٥ = ١٥٦٫٥٢ ، الربح = ٣٦٫٥٢
+  const legacy = {
+    id: 'p4', cashierId: 'u1', date: '2026-03-01T10:00:00Z', status: 'completed',
+    items: [{ price: 100, qty: 2, costAtSale: 60 }],
+    discount: 20, taxRate: 15, taxInclusive: true
+  };
+  assert.strictEqual(r2(computeInvoiceProfit(legacy).profit), 36.52);
+});
+
+test('فاتورة قديمة بلا إجمالي ولا خصم ولا ضريبة تبقى كما كانت', () => {
+  // ١٠٠ − ٦٠ = ٤٠ — الفواتير البسيطة القديمة لا يتغيّر رقمها بهذا الإصلاح
+  const legacy = {
+    id: 'p5', cashierId: 'u1', date: '2026-03-01T10:00:00Z', status: 'completed',
+    items: [{ price: 100, qty: 1, costAtSale: 60 }]
+  };
+  assert.strictEqual(r2(computeInvoiceProfit(legacy).profit), 40);
+});
+
+test('خصم بند + خصم عام معاً: inv.discount يحمل مجموعهما', () => {
+  // بند أ: ١٠٠ خصمه ١٠ (تكلفة ٦٠) · بند ب: ٥٠ بلا خصم (تكلفة ٢٠)
+  // خصم عام ١٥ ⇒ discount المحفوظ = ٢٥
+  //   ١٥٠ − ٢٥ = ١٢٥ ، التكلفة ٨٠ ، الربح = ٤٥
+  const legacy = {
+    id: 'p6', cashierId: 'u1', date: '2026-03-01T10:00:00Z', status: 'completed',
+    items: [
+      { price: 100, qty: 1, discount: 10, costAtSale: 60 },
+      { price: 50, qty: 1, discount: 0, costAtSale: 20 }
+    ],
+    discount: 25
+  };
+  const res = computeInvoiceProfit(legacy);
+  assert.strictEqual(r2(res.netRevenue), 125);
+  assert.strictEqual(res.cogs, 80);
+  assert.strictEqual(r2(res.profit), 45);
+});
+
+test('بند قديم بلا costAtSale يرجع إلى costPrice بدل أن يُعدّ بلا تكلفة', () => {
+  // ١٠٠ − ٦٠ = ٤٠ ، ولو أُهملت التكلفة لظهر الربح ١٠٠
+  const legacy = {
+    id: 'p7', cashierId: 'u1', date: '2026-03-01T10:00:00Z', status: 'completed',
+    items: [{ price: 100, qty: 1, costPrice: 60 }], total: 100, taxAmount: 0
+  };
+  assert.strictEqual(r2(computeInvoiceProfit(legacy).profit), 40);
 });
 
 console.log('\n— البونص —');
@@ -234,6 +355,21 @@ test('attachBonuses تربط قاعدة كل موظف بأرقامه', () => {
   assert.strictEqual(p.staff.find(s => s.id === 'u1').bonus.amount, 30);
   assert.strictEqual(p.staff.find(s => s.id === 'u2').bonus.amount, 0);
   assert.strictEqual(p.totals.bonus, 30);
+});
+
+test('بونص الربح يُحتسب على الربح المتحقّق لا على السعر المعلن', () => {
+  // نفس الفاتورة أعلاه (ربحها ٩٫٥٧): بونص ١٠٪ = ٠٫٩٦ ر.س
+  // وقبل التصحيح كان يُحتسب على ربح ٤٠ فيُصرف ٤٫٠٠ — أي أربعة أضعاف.
+  const users = [{
+    id: 'u1', name: 'كاشير ١',
+    bonusRule: { enabled: true, base: 'gross_profit', type: 'percent', percent: 10 }
+  }];
+  const p = attachBonuses(
+    computeStaffPerformance({ users, invoices: [INV_DISCOUNT_TAX_INCL], period: 'all' }),
+    users
+  );
+  const s = p.staff.find(x => x.id === 'u1');
+  assert.strictEqual(r2(s.bonus.amount), 0.96);
 });
 
 console.log('\n— المعدّل الساعي —');

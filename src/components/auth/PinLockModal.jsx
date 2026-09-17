@@ -1,10 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '../../context/AppContext';
 import { Lock, Delete, AlertCircle, Radio, CheckCircle2, LogOut } from 'lucide-react';
 import { checkPinAttempt, recordFailedPin, clearPinAttempts } from '../../utils/security';
 
 export const PinLockModal = ({ onLoginSuccess }) => {
-  const { isLocked, isInactivityLock, loginWithPin, loginWithNfc, storeInfo, users, currentUser, firebaseUser, logoutFirebase, needsPinSetup, setupInitialPin } = useApp();
+  const { isLocked, isInactivityLock, loginWithPin, loginWithNfc, storeInfo, users, currentUser, firebaseUser, logoutFirebase, needsPinSetup, setupInitialPin, confirmDialog, promptDialog } = useApp();
   // البوابة مفتوحة أيضاً حين لا يوجد موظف محدد بعد (مباشرة بعد دخول البريد)
   const gateOpen = isLocked || !currentUser;
   const [pin, setPin] = useState('');
@@ -47,10 +47,63 @@ export const PinLockModal = ({ onLoginSuccess }) => {
     }
   };
 
+  // =======================================================================
+  //  البطاقة تمرّ من نفس بوابة الحدّ من المحاولات التي يمرّ منها الرقم
+  // =======================================================================
+  //  كان هذا المسار يستدعي loginWithNfc مباشرةً بلا أي سقف، بينما مسار
+  //  الرقم المجاور محكوم بـ checkPinAttempt/recordFailedPin. والبطاقة
+  //  **بديل كامل** عن الرمز السري لا إضافة إليه (انظر security.js)، فمن
+  //  أُقفل أمامه إدخال الرقم بعد ثماني محاولات كان يفتح الباب نفسه من
+  //  البطاقة بلا حدّ إطلاقاً — ومحاكي بطاقات موصول كقارئ لوحة مفاتيح
+  //  يجرّب المعرّفات بسرعة الآلة لا بسرعة الإصبع.
+  //
+  //  والعدّاد هو نفسه ('global') عمداً: عدّادان منفصلان يعنيان أن استنفاد
+  //  أحدهما لا يمسّ الآخر، فيُستأنف التخمين من المسار الثاني ويصير الحدّ
+  //  مضاعفاً بدل أن يكون حدّاً.
+  //
+  //  ولا يُستدعى recordFailedLoginAttempt هنا: loginWithNfc تسجّل الفشل
+  //  أصلاً (`recordFailedLoginAttempt('nfc', 'بطاقة غير مسجّلة')`)، وسجل
+  //  الدخول لا يُحذف منه شيء — فتكرار الاستدعاء يُدخل قيدين لمحاولة واحدة
+  //  ويجعل عدّ محاولات الاقتحام من السجل خاطئاً إلى الأبد.
+  // =======================================================================
+  //  ولا يُعرض معرّف البطاقة في رسالة الخطأ: رسالة loginWithNfc تحمله
+  //  نصاً صريحاً، وعرضه على شاشة القفل يُبطل سبب تجزئة nfcCardHash أصلاً
+  //  — بطاقة حقيقية قُرئت على جهاز لا تملك تسجيلاً فيه كانت تُظهر رقمها
+  //  التسلسلي لمن يقف خلف الكاشير.
+  // =======================================================================
+
+  // آخر بطاقة فاشلة وزمنها — لمنع قفلٍ عرضي شرحه في handleNfcVerification
+  const lastFailedCardRef = useRef({ id: '', at: 0 });
+
   const handleNfcVerification = (cardId) => {
     if (!cardId) return;
+
+    // =====================================================================
+    //  بطاقة واحدة مكرّرة لا تُعدّ محاولات متعدّدة
+    // =====================================================================
+    //  قارئ NFC يُطلق onreading مراراً ما دامت البطاقة موضوعة عليه، وقارئ
+    //  RFID بنمط لوحة المفاتيح يكرّر الإرسال كذلك. فبطاقة نُسيت على القارئ
+    //  كانت ستستنفد الحدّ الجديد في ثوانٍ وتقفل الجهاز ربع ساعة في وجه
+    //  الكاشير — أي أن الحماية نفسها تصير تعطيلاً للعمل.
+    //  والتجاهل مقصور على **نفس المعرّف** خلال ثانيتين، فمن يجرّب معرّفات
+    //  مختلفة (وهو التخمين الحقيقي) يُعدّ عليه كل واحد منها.
+    // =====================================================================
+    const now = Date.now();
+    const last = lastFailedCardRef.current;
+    if (last.id && last.id === String(cardId) && now - last.at < 2000) return;
+
+    // بوابة الحدّ من المحاولات — تُفحص قبل أي تحقق فعلي، كما في مسار الرقم
+    const gate = checkPinAttempt('global');
+    if (!gate.allowed) {
+      setError(gate.message);
+      setTimeout(() => setError(''), 3000);
+      return;
+    }
+
     const res = loginWithNfc(cardId);
     if (res.success) {
+      lastFailedCardRef.current = { id: '', at: 0 };
+      clearPinAttempts('global');
       setSuccess(res.message);
       setError('');
       setTimeout(() => {
@@ -58,7 +111,13 @@ export const PinLockModal = ({ onLoginSuccess }) => {
         if (onLoginSuccess) onLoginSuccess(res.user);
       }, 400);
     } else {
-      setError(res.message || 'بطاقة NFC غير مسجلة!');
+      lastFailedCardRef.current = { id: String(cardId), at: now };
+      const { remaining } = recordFailedPin('global');
+      setError(
+        remaining > 0 && remaining <= 3
+          ? `بطاقة NFC غير مسجلة! تبقّى ${remaining} محاولات قبل قفل الإدخال.`
+          : 'بطاقة NFC غير مسجلة!'
+      );
       setTimeout(() => setError(''), 3000);
     }
   };
@@ -130,6 +189,11 @@ export const PinLockModal = ({ onLoginSuccess }) => {
     let lastKeyTime = Date.now();
 
     const handleKeyDown = (e) => {
+      // نافذة تأكيد/إدخال من التطبيق مفتوحة فوق شاشة القفل؟ لا نلتقط شيئاً.
+      // بدون هذا يذهب كل رقم يُكتب في حقل النافذة إلى محاولة دخول أيضاً،
+      // فتُستهلك محاولات الحدّ من التخمين ويُقفل الإدخال بلا سبب ظاهر.
+      if (document.querySelector('[data-app-dialog="true"]')) return;
+
       const currentTime = Date.now();
       const timeDiff = currentTime - lastKeyTime;
       lastKeyTime = currentTime;
@@ -295,7 +359,15 @@ export const PinLockModal = ({ onLoginSuccess }) => {
           {firebaseUser?.email && (
             <button
               type="button"
-              onClick={async () => { if (window.confirm('تسجيل الخروج من هذا البريد؟')) await logoutFirebase(); }}
+              onClick={async () => {
+                const ok = await confirmDialog({
+                  title: 'تسجيل الخروج',
+                  message: `تسجيل الخروج من هذا البريد؟${firebaseUser?.email ? '\n\n' + firebaseUser.email : ''}`,
+                  confirmText: 'خروج',
+                  tone: 'warning'
+                });
+                if (ok) await logoutFirebase();
+              }}
               className="w-full mt-2 py-2 rounded-xl bg-rose-600/15 hover:bg-rose-600/30 border border-rose-400/25 text-rose-200 text-[11px] font-black transition active:scale-95 flex items-center justify-center gap-1"
             >
               <LogOut className="w-3.5 h-3.5" />
@@ -331,7 +403,13 @@ export const PinLockModal = ({ onLoginSuccess }) => {
           <button
             type="button"
             onClick={async () => {
-              if (window.confirm('تسجيل الخروج من هذا البريد والعودة لشاشة الدخول؟')) {
+              const ok = await confirmDialog({
+                title: 'تسجيل الخروج',
+                message: `تسجيل الخروج من هذا البريد والعودة لشاشة الدخول؟${firebaseUser?.email ? '\n\n' + firebaseUser.email : ''}`,
+                confirmText: 'خروج',
+                tone: 'warning'
+              });
+              if (ok) {
                 await logoutFirebase();
               }
             }}
@@ -353,8 +431,14 @@ export const PinLockModal = ({ onLoginSuccess }) => {
 
       {/* بطاقة قارئ NFC التفاعلية */}
       <div 
-        onClick={() => {
-          const code = prompt('أدخل رقم بطاقة NFC أو امسحها بقارئ RFID:');
+        onClick={async () => {
+          const code = await promptDialog({
+            title: 'بطاقة NFC / RFID',
+            message: 'أدخل رقم البطاقة أو امسحها بالقارئ:',
+            placeholder: 'رقم البطاقة',
+            required: true,
+            confirmText: 'تحقّق'
+          });
           if (code) handleNfcVerification(code);
         }}
         className="w-full max-w-[280px] mb-3.5 p-2.5 rounded-2xl bg-purple-950/60 border border-purple-500/30 flex items-center justify-center gap-2 cursor-pointer hover:bg-purple-900/70 transition active:scale-98 shadow-sm"

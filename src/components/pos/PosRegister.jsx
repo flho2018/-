@@ -11,6 +11,7 @@ import { ReceiptModal } from './ReceiptModal';
 import { QuickCalculatorModal } from '../common/QuickCalculatorModal';
 import { printInvoiceDirectly } from '../../utils/printHelper';
 import { INITIAL_PAYMENT_METHODS } from '../../utils/initialData';
+import { findLastClosedShift } from '../../utils/useShiftMetrics';
 import { PaymentMethodIcon } from './PaymentMethodIcon';
 
 export const PosRegister = ({ isCartOpen, setIsCartOpen }) => {
@@ -41,7 +42,9 @@ export const PosRegister = ({ isCartOpen, setIsCartOpen }) => {
     users,
     checkout,
     updateProduct,
-    holdCurrentCart
+    holdCurrentCart,
+    confirmDialog,
+    promptDialog
   } = useApp();
 
   // ============ تعليق الفاتورة الحالية (Hold Bill) ============
@@ -60,22 +63,32 @@ export const PosRegister = ({ isCartOpen, setIsCartOpen }) => {
   };
 
   // إفراغ السلة — مقيّد بالصلاحية + تأكيد (كان يمسح فاتورة كاملة بنقرة واحدة)
-  const handleClearCart = () => {
+  const handleClearCart = async () => {
     if (!canClearCart) return denyPos('إلغاء ومسح الفاتورة بالكامل');
-    if (cart.length > 0 && !window.confirm(`سيتم مسح ${cart.length} صنف من السلة وإلغاء الفاتورة الحالية. متأكد؟`)) return;
+    if (cart.length > 0) {
+      const ok = await confirmDialog({
+        title: 'إلغاء الفاتورة الحالية',
+        message: `سيتم مسح ${cart.length} صنف من السلة وإلغاء الفاتورة الحالية.\n\nمتأكد؟`,
+        confirmText: 'مسح السلة',
+        tone: 'danger'
+      });
+      if (!ok) return;
+    }
     clearCart();
   };
 
-  const handleHoldCurrentBill = () => {
+  const handleHoldCurrentBill = async () => {
     if (cart.length === 0) return;
     if (!canHoldBill) {
       alert('⛔ ليس لديك صلاحية تعليق الفواتير.\nتُمنح من: الإعدادات ← المستخدمون ← الصلاحيات ← "تعليق واسترجاع الفواتير".');
       return;
     }
-    const label = window.prompt(
-      'اسم أو ملاحظة للفاتورة المعلقة (اختياري):',
-      `فاتورة ${selectedCustomer?.name || 'عميل نقدي'} — ${new Date().toLocaleTimeString('ar-SA')}`
-    );
+    const label = await promptDialog({
+      title: 'تعليق الفاتورة',
+      message: 'اسم أو ملاحظة للفاتورة المعلقة (اختياري):',
+      defaultValue: `فاتورة ${selectedCustomer?.name || 'عميل نقدي'} — ${new Date().toLocaleTimeString('ar-SA')}`,
+      confirmText: 'تعليق'
+    });
     if (label === null) return; // ألغى المستخدم
     const ok = holdCurrentCart(label.trim());
     if (ok && setIsCartOpen) setIsCartOpen(false);
@@ -125,18 +138,13 @@ export const PosRegister = ({ isCartOpen, setIsCartOpen }) => {
     }
   }, [storeInfo?.paymentMethods, storeInfo?.paymentSettings]);
 
-  // البحث عن آخر وردية مغلقة لنفس المستخدم الحالي لاستخراج الرصيد المرحل تلقائياً
-  const lastUserClosedShift = React.useMemo(() => {
-    const currentUid = currentUser?.id || 'admin';
-    const currentName = currentUser?.name;
-    return (shiftsHistory || []).find(s => 
-      s && s.status === 'closed' && (
-        (s.userId && s.userId === currentUid) || 
-        (s.cashierId && s.cashierId === currentUid) ||
-        (s.cashierName && s.cashierName === currentName)
-      )
-    );
-  }, [shiftsHistory, currentUser]);
+  // آخر وردية مغلقة **زمنياً** لنفس المستخدم — مصدر الرصيد المرحَّل.
+  // كانت `.find()` تُرجع أول عنصر في المصفوفة لا آخر وردية، وترتيب المصفوفة
+  // بعد المزامنة غير موثوق. انظر findLastClosedShift في useShiftMetrics.js.
+  const lastUserClosedShift = React.useMemo(
+    () => findLastClosedShift(shiftsHistory, currentUser),
+    [shiftsHistory, currentUser]
+  );
 
   const allOpenShifts = React.useMemo(() => {
     const validUserIds = new Set((users || []).filter(u => u && u.isActive !== false).map(u => u.id));
@@ -171,7 +179,7 @@ export const PosRegister = ({ isCartOpen, setIsCartOpen }) => {
   const desktopNumReceived = Number(desktopReceivedAmount) || totals.total;
   const desktopChange = Math.max(0, desktopNumReceived - totals.total);
 
-  const handleDesktopPayClick = () => {
+  const handleDesktopPayClick = async () => {
     if (cart.length === 0) return;
     if (!isShiftOpen) {
       setIsOpenShiftModal(true);
@@ -204,7 +212,7 @@ export const PosRegister = ({ isCartOpen, setIsCartOpen }) => {
     }
 
     // إتمام الفاتورة فوراً بنقرة واحدة سريعة على الكمبيوتر
-    const createdInvoice = checkout({
+    const createdInvoice = await checkout({
       paymentMethod: method?.id || 'cash',
       paymentMethodName: method?.name || 'نقداً',
       paymentMethodType: mType,
@@ -588,12 +596,15 @@ export const PosRegister = ({ isCartOpen, setIsCartOpen }) => {
     if (myPendingFloatTotal > 0) setOpeningCashInput(String(myPendingFloatTotal));
   }, [myPendingFloatTotal]);
 
-  const handleOpenShift = (e) => {
+  const handleOpenShift = async (e) => {
     e.preventDefault();
     // لا نرفض ونغلق النافذة: openNewShift نفسه يكتشف الوردية القائمة
     // ويستأنفها ويُعلم المستخدم. الرفض هنا كان يترك الكاشير عالقاً:
     // لا وردية فعّالة على الشاشة، ولا يُسمح له بفتح واحدة.
-    openNewShift(Number(openingCashInput) || 0);
+    // `await` ضروري: فتح الوردية صار غير متزامن (قد يسأل عن وردية سابقة
+    // مفتوحة)، وإضافة الصنف المعلّق أدناه ترفضها الدالة إن لم تكن الوردية
+    // قد فُتحت فعلاً — فيختفي الصنف بلا رسالة ويظنّ الكاشير أنه أُضيف.
+    await openNewShift(Number(openingCashInput) || 0);
     setIsOpenShiftModal(false);
     if (pendingProductToCart) {
       const prod = pendingProductToCart;
@@ -1802,13 +1813,20 @@ export const PosRegister = ({ isCartOpen, setIsCartOpen }) => {
             <div className="flex items-center gap-1.5 ms-2">
               <button
                 type="button"
-                onClick={() => {
+                onClick={async () => {
                   const inv = quickPrintNotice.invoice;
                   if (!inv) return;
                   const text = buildInvoiceWhatsAppMessage(inv, storeInfo);
                   let phone = (inv.customer?.phone && inv.customer?.phone !== '-' && inv.customer?.phone !== '0500000000') ? inv.customer.phone : '';
                   if (!phone) {
-                    const promptPhone = prompt('أدخل رقم جوال العميل للإرسال عبر الواتساب (أو اضغط موافق لاختيار المحادثة من الواتساب):', '');
+                    const promptPhone = await promptDialog({
+                      title: 'إرسال عبر الواتساب',
+                      message: 'أدخل رقم جوال العميل، أو اتركه فارغاً لاختيار المحادثة من الواتساب.',
+                      placeholder: '05xxxxxxxx',
+                      inputMode: 'numeric',
+                      confirmText: 'فتح الواتساب'
+                    });
+                    if (promptPhone === null) return;   // إلغاء صريح: لا يُفتح الواتساب
                     if (promptPhone && promptPhone.trim()) phone = promptPhone.trim();
                   }
                   const urls = getWhatsAppUrls(phone, text);

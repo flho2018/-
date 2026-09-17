@@ -7,6 +7,8 @@
 //   onRemoteChange(cb)  →  cb(key, data, payload)
 //   onStatusChange(cb) / onActivity(cb) / broadcastActivity(a)
 //   pushAllLocal(snapshot, isReset) / pullAllRemote()
+//   liftResetMarks(keys, reason)  ← مسار استرجاع صريح لنسخة أقدم من التصفير
+//   restoreBlockedHandler = (key, blocked, mark, kept) => {}  ← إعلان الإسقاط
 //
 // ما تغيّر بالداخل:
 //   قبل:  pos_sync_v1/products = { data: [500 منتج] }   ← مستند واحد ضخم
@@ -127,6 +129,15 @@ class SyncEngine {
     this.written = {};
     // المفاتيح التي وصلت لقطتها الأولى — لتمييز التحميل الأول عن التحديثات
     this.firstLoadDone = {};
+    // «هل نعرف ماذا في السحابة؟» سؤال مختلف عن «هل وصلتنا بيانات؟».
+    // ما دامت false فإن فراغ this.written لا يعني أن المجموعة السحابية
+    // فارغة، بل أننا لم نسمع من الخادم بعد — وبينهما فرق يكلّف مخزوناً.
+    this.cloudSeen = {};
+    // قيم ابتدائية لحقول تراكمية (stock/balance) كُتب سجلها بلا هذه الحقول
+    // لأن حالة السحابة كانت مجهولة. تُحسم عند أول لقطة من الخادم.
+    this.pendingOwnedInit = {};   // key → Map(docId → { field: value })
+    // إعلان «أُسقط ما أردتَ رفعه بختم التصفير» يُرسل مرة واحدة لكل قسم
+    this.purgeNoticeSent = {};
     // الكتابات والحذوفات المحلية التي لم تُؤكَّد بعد في اللقطة القادمة.
     // تُستخدم لتغطية الفجوة القصيرة بين الحفظ محلياً ووصول اللقطة، حتى
     // تصبح اللقطة مرجعاً وحيداً بلا أن يختفي سجل للحظة من الشاشة.
@@ -253,6 +264,19 @@ class SyncEngine {
   listenCollection(key) {
     const ref = collection(db, collectionFor(key));
     const unsub = onSnapshot(ref, (snap) => {
+      // =================================================================
+      //  من هنا فصاعداً نعرف ماذا في السحابة لهذا القسم
+      // =================================================================
+      //  يُسجَّل قبل أي خروج مبكر — حتى عند اللقطة الفارغة — لأن «المجموعة
+      //  فارغة فعلاً على الخادم» معرفةٌ كاملة تماماً مثل «فيها ٥٠٠ صنف».
+      //  ولقطة من الذاكرة المؤقتة (fromCache) لا تُعدّ معرفة: قد تكون
+      //  فارغة لانقطاع الشبكة لا لخلوّ المجموعة، والبناء عليها يعيدنا
+      //  إلى نفس العطل: كتابة كمية مطلقة فوق بيع جهاز آخر.
+      if (!snap.metadata?.fromCache) {
+        this.cloudSeen[key] = true;
+        this.initOwnedFromSnapshot(key, snap);
+      }
+
       // حماية حاسمة: مجموعة سحابية فارغة لا تعني "احذف كل شيء محلياً".
       // قد تكون ببساطة لم تُملأ بعد. بدون هذا الشرط تُمسح البيانات المحلية.
       if (snap.empty) {
@@ -363,6 +387,79 @@ class SyncEngine {
     }
   }
 
+  // =================================================================
+  //  إعلان الإسقاط بختم التصفير — لا نجاح صامت
+  // =================================================================
+  //  ما كان يحدث: يسترجع المالك نسخة احتياطية أقدم من آخر تصفير، فتمتلئ
+  //  الشاشة بالبيانات وتقول الواجهة «تم الاسترجاع بنجاح»، بينما كل سجل
+  //  أُسقط هنا قبل أن يُكتب. فلا جهاز آخر يراه، وأول لقطة تمسحه من أمام
+  //  المالك بلا سبب ظاهر. «نجاح» يكذب أخطر من فشل معلن.
+  //  مرة واحدة لكل قسم في الجلسة: التكرار يحوّل التحذير إلى ضجيج يُتجاهل.
+  reportPurgeBlocked(key, blocked, kept) {
+    console.warn(
+      '[SyncEngine] ⛔ أُسقط ' + blocked + ' سجلاً من "' + key + '" لأنه أقدم من آخر تصفير — لم يُرفع للسحابة' +
+      (kept > 0 ? ' (ورُفع ' + kept + ' أحدث منه)' : ' (ولم يُرفع شيء إطلاقاً)')
+    );
+    if (this.purgeNoticeSent[key]) return;
+    this.purgeNoticeSent[key] = true;
+    if (typeof this.restoreBlockedHandler === 'function') {
+      try {
+        this.restoreBlockedHandler(key, blocked, Number(this.resetMarks?.[key]) || 0, kept);
+      } catch (e) {}
+    }
+  }
+
+  // =================================================================
+  //  رفع ختم التصفير — مسار استرجاع صريح لا سلوك ضمني
+  // =================================================================
+  //  لماذا لا يُرفع الختم تلقائياً عند أول حفظ يحمل سجلات قديمة: لأن
+  //  ذلك يُلغي علامات التصفير من أساسها. أي جهاز نائم منذ أسبوع كان
+  //  سيُحيي عند إقلاعه كل ما مسحه المالك عمداً — وهو العطل الذي وُضعت
+  //  العلامات لمنعه أصلاً (§5.3 وقسم علامات التصفير أعلاه).
+  //  لذلك: الرفع فعلٌ يطلبه المالك صراحةً قبل استرجاع نسخة أقدم من
+  //  التصفير، ويُكتب في المستند المشترك فتحترمه كل الأجهزة فوراً.
+  //  وإن فشلت كتابته سحابياً نُعلن الفشل: بدونه سيُسقط كل جهاز آخر ما
+  //  استُرجع، فيرى المالك بياناته على جهاز واحد فقط ويظنّها عادت.
+  // =================================================================
+  async liftResetMarks(keys = [], reason = '') {
+    const list = (Array.isArray(keys) ? keys : [keys]).filter(k => SYNC_KEYS.includes(k));
+    if (list.length === 0) {
+      return { success: false, message: 'لم يُحدَّد أي قسم صالح لرفع ختم التصفير عنه' };
+    }
+
+    const marks = { ...(this.resetMarks || {}) };
+    const payload = { _src: this.clientId, _ts: Date.now() };
+    list.forEach(k => { marks[k] = 0; payload[k] = 0; });
+    this.resetMarks = marks;
+    try { localStorage.setItem('naif_pos_v3_reset_marks', JSON.stringify(marks)); } catch (e) {}
+    // الختم المحلي لكل قسم يُرفع أيضاً، وإلا بقي هذا الجهاز وحده يُخفي ما استُرجع
+    list.forEach(k => {
+      try { localStorage.removeItem('naif_pos_v3_' + k + '_reset_at'); } catch (e) {}
+      this.purgeNoticeSent[k] = false;
+    });
+    if (list.includes('invoices')) {
+      // للفواتير أرضية محلية ثانية تُخفي كل ما قبلها مهما رُفع الختم.
+      // نُعيدها إلى الأرضية الثابتة — وما قبل INVOICES_RESET_FLOOR لا يُسترجع
+      // بأي حال، وهذا حدّ معلن لا عطل.
+      try { localStorage.setItem('naif_pos_v3_invoices_reset_at', String(INVOICES_RESET_FLOOR)); } catch (e) {}
+    }
+
+    try {
+      await setDoc(doc(db, META_COLLECTION, RESET_MARKS_DOC), payload, { merge: true });
+      console.warn('[SyncEngine] ⟲ رُفع ختم التصفير عن: ' + list.join('، ') + (reason ? ' — ' + reason : ''));
+      return { success: true, keys: list };
+    } catch (err) {
+      console.error('[SyncEngine] ✖ تعذّر رفع ختم التصفير سحابياً:', err?.code || '', err?.message || err);
+      this.setStatus('error');
+      return {
+        success: false,
+        error: err,
+        code: err?.code || '',
+        message: 'تعذّر رفع ختم التصفير في السحابة — ستظل الأجهزة الأخرى تُسقط ما يُسترجع. نفّذ الاسترجاع من جهاز المدير.'
+      };
+    }
+  }
+
   listenResetMarks() {
     const ref = doc(db, META_COLLECTION, RESET_MARKS_DOC);
     const unsub = onSnapshot(ref, (snap) => {
@@ -468,6 +565,47 @@ class SyncEngine {
     const map = new Map();
     snap.forEach(d => map.set(d.id, JSON.stringify(stripMeta(d.data()))));
     this.written[key] = map;
+  }
+
+  // ---------------------------------------------------------------
+  //  القيمة الابتدائية للحقول التراكمية — مؤجَّلة حتى تُعرف السحابة
+  // ---------------------------------------------------------------
+  //  المشكلة التي تحلّها: صنف نكتبه ونحن لا نعرف بعد إن كان موجوداً في
+  //  السحابة له احتمالان متناقضان لا ثالث لهما:
+  //    • صنف جديد فعلاً ⇒ يجب أن نكتب كميته، وإلا وصل الأجهزة بلا كمية.
+  //    • صنف قائم لم تصلنا لقطته ⇒ كتابة كميتنا تمحو بيع جهاز آخر.
+  //  لا يمكن الحكم قبل وصول لقطة الخادم، فنكتب السجل بلا الحقل التراكمي
+  //  ونحتفظ بقيمته هنا، ثم تحسمها اللقطة: المستند السحابي بلا قيمة لهذا
+  //  الحقل ⇒ جديد فعلاً فنكتبها؛ وبقيمة ⇒ هي الحقيقة التراكمية (فيها بيع
+  //  الجهاز الآخر) فنُسقط قيمتنا ولا نكتبها أبداً.
+  queueOwnedInit(key, id, fields) {
+    if (!fields || Object.keys(fields).length === 0) return;
+    if (!this.pendingOwnedInit[key]) this.pendingOwnedInit[key] = new Map();
+    const cur = this.pendingOwnedInit[key].get(id) || {};
+    this.pendingOwnedInit[key].set(id, { ...cur, ...fields });
+  }
+
+  initOwnedFromSnapshot(key, snap) {
+    const queue = this.pendingOwnedInit[key];
+    if (!queue || queue.size === 0) return;
+    // تُفرَّغ فوراً: لقطة الخادم حسمت الأمر، ولا معنى لإعادة المحاولة
+    this.pendingOwnedInit[key] = new Map();
+
+    const remote = new Map();
+    try { snap.forEach(d => remote.set(d.id, d.data() || {})); } catch (e) {}
+
+    const colName = collectionFor(key);
+    queue.forEach((fields, id) => {
+      const remoteDoc = remote.get(id);
+      const missing = {};
+      Object.entries(fields).forEach(([f, v]) => {
+        // الحقل موجود في السحابة ⇒ السحابة أصدق: لا نلمسه
+        if (!remoteDoc || remoteDoc[f] === undefined) missing[f] = v;
+      });
+      if (Object.keys(missing).length === 0) return;
+      setDoc(doc(db, colName, id), { ...missing, _src: this.clientId, _ts: Date.now() }, { merge: true })
+        .catch(err => console.warn('[SyncEngine] تعذّر تثبيت القيمة الابتدائية لـ "' + key + '/' + id + '":', err?.message));
+    });
   }
 
   // ---------------------------------------------------------------
@@ -685,10 +823,13 @@ class SyncEngine {
 
       const prev = isReset ? new Map() : (this.written[key] || new Map());
       const next = new Map();
+      // كم سجلاً أسقطه ختم التصفير؟ إسقاطه صامتاً هو ما كان يجعل استرجاع
+      // نسخة أقدم من التصفير «ينجح» على الشاشة ولا يغادر الجهاز إطلاقاً.
+      let blockedByReset = 0;
 
       if (MAP_KEYS.includes(key)) {
         Object.entries(data || {}).forEach(([k, v]) => {
-          if (this.isPurged(key, v)) return;   // وردية مُصفَّرة لا تُرفع ثانية
+          if (this.isPurged(key, v)) { blockedByReset++; return; }   // وردية مُصفَّرة لا تُرفع ثانية
           next.set(toDocId(k, 0), { ...v });
         });
       } else {
@@ -696,10 +837,12 @@ class SyncEngine {
           if (!item || typeof item !== 'object') return;
           // سجل أقدم من تاريخ التصفير المشترك لا يُرفع أبداً — وإلا أعاد
           // جهازٌ متأخّر إحياء كل ما مسحه التصفير على جهاز آخر.
-          if (this.isPurged(key, item)) return;
+          if (this.isPurged(key, item)) { blockedByReset++; return; }
           next.set(idOf(item, i), { ...item, _idx: i });
         });
       }
+
+      if (blockedByReset > 0) this.reportPurgeBlocked(key, blockedByReset, next.size);
 
       const ops = [];
 
@@ -718,7 +861,12 @@ class SyncEngine {
         const t = new Date(o?.updatedAt || 0).getTime();
         return Number.isFinite(t) ? t : 0;
       };
-      const owned = INCREMENT_OWNED[key] || null;
+      // أثناء التصفير نكتب الحالة الابتدائية كاملةً (استبدال مقصود)، فلا
+      // تجريد ولا تأجيل. (عملياً prev فارغة عند التصفير فالسلوك لم يتغيّر.)
+      const owned = isReset ? null : (INCREMENT_OWNED[key] || null);
+      // هل وصلتنا لقطة من الخادم لهذا القسم؟ ما لم تصل، فغياب السجل من
+      // prev لا يعني أنه غير موجود في السحابة — يعني أننا لا نعرف.
+      const cloudKnown = this.cloudSeen[key] === true;
       next.forEach((value, id) => {
         const serialized = JSON.stringify(stripMeta(value));
         const remoteRaw = prev.get(id);
@@ -736,17 +884,44 @@ class SyncEngine {
             }
           } catch (e) { /* نص غير صالح: نكمل بالسلوك المعتاد */ }
         }
-        // عند تحديث مستند قائم: نُجرِّد الحقول التراكمية (مثل stock) ونكتب
-        // البقية بـ merge، فلا تُمحى قيمتها السحابية ولا تُدهس بنسخة أقدم.
-        // عند الإنشاء أول مرة نكتبها كاملةً (استبدال) لتأسيس القيمة الابتدائية.
-        if (owned && isUpdate) {
+        // ===================================================================
+        //  الحقل التراكمي لا يُكتب مطلقاً إلا ونحن موقنون أن المستند جديد
+        // ===================================================================
+        //  §5.1 كانت مشروطة بـ isUpdate وحده، و isUpdate معناه الحرفي
+        //  «رأيتُه في لقطة سابقة» لا «موجود في السحابة». وقبل وصول أول
+        //  لقطة (إقلاع على شبكة بطيئة، ثم إضافة صنف تمرّ بـ immediate
+        //  فتتخطّى كل حراس التأخير) تبدو **كل** الأصناف جديدة، فتُكتب
+        //  كمياتها المطلقة من ذاكرة هذا الجهاز: السحابة ١٥ بعد بيع خمس
+        //  وردات على جهاز آخر، وهذا الجهاز يكتب ٢٠ ⇒ البيع يُمحى.
+        //  الآن: ما لم تصل لقطة من الخادم، نُجرِّد الحقل ونؤجّل قيمته
+        //  الابتدائية إلى أن تحسمها اللقطة (انظر queueOwnedInit).
+        if (owned && (isUpdate || !cloudKnown)) {
           const writeVal = { ...value };
-          owned.forEach(f => { delete writeVal[f]; });
+          const heldInit = {};
+          // نسخة السحابة كما رأيناها في آخر لقطة — إن كانت معروفة أصلاً
+          let remoteObj = null;
+          if (isUpdate) { try { remoteObj = JSON.parse(remoteRaw); } catch (e) { remoteObj = null; } }
+          owned.forEach(f => {
+            if (value[f] === undefined) { delete writeVal[f]; return; }
+            // المستند معروف في السحابة وبلا قيمة لهذا الحقل إطلاقاً: لا قيمة
+            // تراكمية نُتلفها، وتركه فارغاً يعني صنفاً بلا كمية عند بقية
+            // الأجهزة. يحدث حين يُنشأ الصنف بلا شبكة ثم يُعاد تحميل الصفحة
+            // قبل وصول أول لقطة، فتضيع قيمته المؤجَّلة من الذاكرة.
+            if (remoteObj && remoteObj[f] === undefined) return;   // تُكتب كما هي: تأسيس لا دهس
+            delete writeVal[f];
+            // التحديث المعروف لا قيمة ابتدائية له أصلاً: مصدره adjustFields
+            if (!isUpdate) heldInit[f] = value[f];
+          });
           // pendingValue يحمل القيمة الكاملة (بالمخزون) لتغطية الشاشة محلياً،
           // بينما value المُرسَل للسحابة مجرَّد ويُكتب بـ merge.
-          ops.push({ type: 'set', id, value: writeVal, merge: true, pendingValue: value });
+          ops.push({ type: 'set', id, value: writeVal, merge: true, pendingValue: value, initOwned: heldInit });
         } else {
-          ops.push({ type: 'set', id, value });
+          // merge لكل كتابة غير تصفيرية: الكتابة الكاملة بـ set غير مدموج
+          // كانت **تحذف** من المستند السحابي كل حقل لا يعرفه هذا الجهاز
+          // (حقل أضافته نسخة أحدث، أو كتبه جهاز آخر قبل أن تصلنا لقطته).
+          // الثمن المقبول: حقلٌ يُحذف محلياً يبقى في السحابة — وهذا عين
+          // §5.3، فغياب شيء من ذاكرة جهاز ليس أمراً بحذفه.
+          ops.push({ type: 'set', id, value, merge: !isReset });
         }
       });
 
@@ -780,7 +955,10 @@ class SyncEngine {
       }
 
       if (ops.length === 0) {
-        this.markSynced();
+        // «لا جديد» و«أُسقط كل ما أردتُ رفعه» ليسا شيئاً واحداً. الثاني
+        // حفظٌ لم يغادر الجهاز إطلاقاً، فلا يصحّ أن يُعلَن مزامنةً ناجحة.
+        if (blockedByReset > 0 && next.size === 0) this.setStatus('error');
+        else this.markSynced();
         return;
       }
 
@@ -801,8 +979,14 @@ class SyncEngine {
         await batch.commit();
       }
 
-      // وصلت للسحابة: لم تعد معلّقة، اللقطة وحدها هي المرجع من الآن
-      ops.forEach(op => { if (op.type === 'set') this.clearPendingWrite(key, op.id); });
+      // وصلت للسحابة: لم تعد معلّقة، اللقطة وحدها هي المرجع من الآن.
+      // والقيم التراكمية المؤجَّلة تُدرَج **بعد** نجاح الكتابة لا قبلها:
+      // لو فشلت الدفعة لَأنشأ تثبيتُ القيمة مستنداً لا يحمل إلا كميةً بلا سجل.
+      ops.forEach(op => {
+        if (op.type !== 'set') return;
+        this.clearPendingWrite(key, op.id);
+        if (op.initOwned) this.queueOwnedInit(key, op.id, op.initOwned);
+      });
 
       // تحديث الذاكرة المرجعية بعد نجاح الكتابة
       const remembered = new Map(isMergeOnly ? prev : []);
@@ -1025,6 +1209,12 @@ class SyncEngine {
         }
 
         const snap = await getDocs(collection(db, collectionFor(key)));
+        // السحب اليدوي معرفةٌ بحالة السحابة تماماً كاللقطة اللحظية — يُسجَّل
+        // قبل الخروج عند الفراغ، فمجموعة فارغة على الخادم معرفة لا جهل.
+        if (!snap.metadata?.fromCache) {
+          this.cloudSeen[key] = true;
+          this.initOwnedFromSnapshot(key, snap);
+        }
         if (snap.empty) continue;
 
         results[key] = this.buildFromSnapshot(key, snap);

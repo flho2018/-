@@ -26,7 +26,8 @@ export const FlowerSpoilageModal = ({ isOpen, onClose }) => {
     recordSpoilage,
     deleteSpoilageRecord,
     currentUser,
-    storeInfo
+    storeInfo,
+    confirmDialog
   } = useApp();
 
   const canViewCost = checkUserPermission(currentUser, 'products_view_cost');
@@ -146,7 +147,7 @@ export const FlowerSpoilageModal = ({ isOpen, onClose }) => {
   }, [spoilageLogs, filterPeriod, filterQuery]);
 
   // حفظ الهالك
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setErrorMsg(null);
 
@@ -163,9 +164,12 @@ export const FlowerSpoilageModal = ({ isOpen, onClose }) => {
 
     const currentStock = Number(selectedProduct.stock) || 0;
     if (damageQty > currentStock) {
-      const ok = window.confirm(
-        `⚠️ الكمية المدخلة للإتلاف (${damageQty}) أكبر من الرصيد الحالي المتوفر (${currentStock}).\nهل تريد المتابعة وتحديث المخزون بالسالب؟`
-      );
+      const ok = await confirmDialog({
+        title: '⚠️ الكمية أكبر من الرصيد',
+        message: `الكمية المدخلة للإتلاف (${damageQty}) أكبر من الرصيد الحالي المتوفر (${currentStock}).\n\nهل تريد المتابعة وتحديث المخزون بالسالب؟`,
+        confirmText: 'متابعة',
+        tone: 'warning'
+      });
       if (!ok) return;
     }
 
@@ -573,10 +577,24 @@ export const FlowerSpoilageModal = ({ isOpen, onClose }) => {
                           <td className="p-3 text-center">
                             <button
                               type="button"
-                              onClick={() => {
-                                const restore = window.confirm(
-                                  `هل تريد حذف قيد التالف؟\n\nاضغط (موافق) لاستعادة الكمية (${item.qty}) للمخزون، أو (إلغاء) لحذف القيد دون لمس المخزون.`
-                                );
+                              onClick={async () => {
+                                // كانت نافذة واحدة بثلاث نتائج مستحيلة: «موافق» تحذف
+                                // وتُعيد المخزون، و«إلغاء» **تحذف أيضاً** بلا إعادة —
+                                // فلم يكن للمستخدم أي طريق للتراجع عن الحذف نفسه.
+                                // فُصل السؤالان: الحذف أولاً، ثم مصير الكمية.
+                                const del = await confirmDialog({
+                                  title: 'حذف قيد تالف',
+                                  message: `حذف قيد إتلاف (${item.productName || 'صنف'}) بكمية ${item.qty}؟`,
+                                  confirmText: 'حذف',
+                                  tone: 'danger'
+                                });
+                                if (!del) return;
+                                const restore = await confirmDialog({
+                                  title: 'مصير الكمية',
+                                  message: `هل تُعاد الكمية (${item.qty}) إلى المخزون؟\n\nاختر «إعادة للمخزون» إن كان القيد خاطئاً والبضاعة سليمة، و«بدون إعادة» إن كانت تالفة فعلاً.`,
+                                  confirmText: 'إعادة للمخزون',
+                                  cancelText: 'بدون إعادة'
+                                });
                                 deleteSpoilageRecord(item.id, restore);
                               }}
                               className="p-1.5 rounded-lg bg-red-950/40 hover:bg-red-800 text-red-300 hover:text-white transition"

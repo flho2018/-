@@ -8,7 +8,7 @@ import { UserSwitchModal } from '../auth/UserSwitchModal';
 import { TreasuryDropModal } from './TreasuryDropModal';
 import { DEFAULT_PAYMENT_ICONS } from '../../utils/paymentIcons';
 
-import { classifyInvoicePayments, filterInvoicesByShift, filterDrawerTxByShift, calculateShiftCashRefunds, useActiveShifts, computeExpectedCash, sumDrawerCashIn, sumDrawerCashOut } from '../../utils/useShiftMetrics';
+import { classifyInvoicePayments, filterInvoicesByShift, filterDrawerTxByShift, calculateShiftCashRefunds, useActiveShifts, computeExpectedCash, sumDrawerCashIn, sumDrawerCashOut, findLastClosedShift } from '../../utils/useShiftMetrics';
 
 export const ShiftHeaderModal = ({ isOpen, onClose }) => {
   const {
@@ -131,17 +131,12 @@ export const ShiftHeaderModal = ({ isOpen, onClose }) => {
   const zReportCardRef = useRef(null);
 
   // البحث عن آخر وردية مغلقة لنفس المستخدم الحالي لاستخراج الرصيد المرحل تلقائياً
-  const lastUserClosedShift = useMemo(() => {
-    const currentUid = currentUser?.id || 'admin';
-    const currentName = currentUser?.name;
-    return (shiftsHistory || []).find(s => 
-      s && s.status === 'closed' && (
-        (s.userId && s.userId === currentUid) || 
-        (s.cashierId && s.cashierId === currentUid) ||
-        (s.cashierName && s.cashierName === currentName)
-      )
-    );
-  }, [shiftsHistory, currentUser]);
+  // آخر وردية مغلقة **زمنياً** — لا أول ما يصادفه في المصفوفة.
+  // انظر findLastClosedShift في useShiftMetrics.js لسبب أن الترتيب لا يُعتمد عليه.
+  const lastUserClosedShift = useMemo(
+    () => findLastClosedShift(shiftsHistory, currentUser),
+    [shiftsHistory, currentUser]
+  );
 
   // حالة فتح الوردية مع الترحيل التلقائي الذكي للرصيد المتبقي
   const [openingCashInput, setOpeningCashInput] = useState(() => {
@@ -225,7 +220,7 @@ export const ShiftHeaderModal = ({ isOpen, onClose }) => {
     }
   };
 
-  const handleConfirmOpen = (e) => {
+  const handleConfirmOpen = async (e) => {
     e.preventDefault();
     if (!hasPermission('drawer_open_close')) {
       alert('⛔ ليس لديك صلاحية لفتح وردية!');
@@ -234,7 +229,8 @@ export const ShiftHeaderModal = ({ isOpen, onClose }) => {
     // openNewShift يكتشف الوردية القائمة ويستأنفها بنفسه؛ الرفض المسبق
     // كان يترك المستخدم بلا وردية فعّالة وبلا قدرة على فتح واحدة.
     const initialCash = Number(openingCashInput) || 0;
-    openNewShift(initialCash);
+    // انتظار الفتح قبل إغلاق النافذة: وإلا أُغلقت الشاشة فوق سؤال الوردية السابقة
+    await openNewShift(initialCash);
     setClosedZReport(null);
     setActualCashCount('');
     setCloseNotes('');

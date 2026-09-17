@@ -4,14 +4,14 @@
   "version": "3.3.0",
   "type": "module",
   "main": "electron/main.cjs",
-  "author": "بيت الورد للزهور والهدايا",
-  "description": "نظام نقاط البيع والكاشير الذكي — بيت الورد",
+  "author": "ط¨ظٹطھ ط§ظ„ظˆط±ط¯ ظ„ظ„ط²ظ‡ظˆط± ظˆط§ظ„ظ‡ط¯ط§ظٹط§",
+  "description": "ظ†ط¸ط§ظ… ظ†ظ‚ط§ط· ط§ظ„ط¨ظٹط¹ ظˆط§ظ„ظƒط§ط´ظٹط± ط§ظ„ط°ظƒظٹ â€” ط¨ظٹطھ ط§ظ„ظˆط±ط¯",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "package": "node ./zip_project.cjs",
     "preview": "vite preview",
-    "test": "node tests/financial_real.test.mjs && node tests/staff_performance.test.mjs && node tests/pin_setup_gate.test.mjs && node tests/expected_cash.test.mjs && node tests/tspl_label.test.mjs && node tests/reset_purge.test.mjs",
+    "test": "node tests/financial_real.test.mjs && node tests/staff_performance.test.mjs && node tests/pin_setup_gate.test.mjs && node tests/expected_cash.test.mjs && node tests/tspl_label.test.mjs && node tests/reset_purge.test.mjs && node tests/app_dialogs.test.mjs && node tests/shift_rollover.test.mjs && node tests/cashier_float_double_count.test.mjs",
     "test:staff": "node tests/staff_performance.test.mjs",
     "emu": "firebase emulators:start --only firestore,auth",
     "test:rules": "firebase emulators:exec --only firestore \"node tests/firestore.rules.test.cjs\"",
@@ -52,7 +52,7 @@
   },
   "build": {
     "appId": "com.baytalward.pos",
-    "productName": "بيت الورد",
+    "productName": "ط¨ظٹطھ ط§ظ„ظˆط±ط¯",
     "directories": {
       "output": "electron-dist"
     },
@@ -81,7 +81,7 @@
       "uninstallerIcon": "public/icon.ico",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "بيت الورد POS",
+      "shortcutName": "ط¨ظٹطھ ط§ظ„ظˆط±ط¯ POS",
       "unicode": true
     }
   },
@@ -89,3 +89,4 @@
     "electron@35.1.0": true
   }
 }
+

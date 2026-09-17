@@ -357,7 +357,7 @@ export const CheckoutModal = ({ isOpen, onClose, onPaymentComplete, onSuccess, i
     }
   };
 
-  const handleComplete = () => {
+  const handleComplete = async () => {
     if (isCompletingRef.current) return;   // ضغطة ثانية أثناء تنفيذ الأولى
     if (!isShiftOpen) {
       setError('⛔ يمنع إتمام البيع والدفع نهائياً بدون فتح وردية للمستخدم الحالي وتوثيق العهدة!');
@@ -449,7 +449,7 @@ export const CheckoutModal = ({ isOpen, onClose, onPaymentComplete, onSuccess, i
     isCompletingRef.current = true;
     setIsCompleting(true);
 
-    const createdInvoice = checkout({
+    const createdInvoice = await checkout({
       paymentMethod: selectedMethod?.id || 'cash',
       paymentMethodName: selectedMethod?.name || 'نقداً',
       paymentMethodType: methodType,

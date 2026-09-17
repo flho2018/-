@@ -18,7 +18,8 @@ export const UsersSettingsTab = () => {
     deleteUser,
     switchUser,
     loginLogs = [],
-    clearLoginLogs
+    clearLoginLogs,
+    confirmDialog
   } = useApp();
 
   // نمط العرض الفرعي: إما قائمة المستخدمين أو سجل الدخول والأجهزة
@@ -219,12 +220,18 @@ export const UsersSettingsTab = () => {
   };
 
   // حذف المستخدم
-  const handleDeleteUser = (user) => {
+  const handleDeleteUser = async (user) => {
     if (user.id === currentUser?.id) {
       alert('لا يمكنك حذف الحساب النشط حالياً!');
       return;
     }
-    if (confirm(`هل أنت متأكد من حذف المستخدم (${user.name}) نهائياً؟`)) {
+    const ok = await confirmDialog({
+      title: 'حذف مستخدم',
+      message: `هل أنت متأكد من حذف المستخدم (${user.name}) نهائياً؟`,
+      confirmText: 'حذف',
+      tone: 'danger'
+    });
+    if (ok) {
       deleteUser(user.id);
     }
   };
@@ -299,8 +306,14 @@ export const UsersSettingsTab = () => {
         {subTab === 'logs' && loginLogs.length > 0 && (
           <button
             type="button"
-            onClick={() => {
-              if (confirm('هل أنت متأكد من رغبتك في تفريغ سجل الدخول بالكامل؟')) {
+            onClick={async () => {
+              const ok = await confirmDialog({
+                title: 'تفريغ سجل الدخول',
+                message: 'هل أنت متأكد من رغبتك في تفريغ سجل الدخول بالكامل؟\n\nملاحظة: المسح محلي على هذا الجهاز فقط — نسخة السحابة محفوظة بقاعدة لا تُحذف.',
+                confirmText: 'تفريغ السجل',
+                tone: 'danger'
+              });
+              if (ok) {
                 clearLoginLogs();
               }
             }}

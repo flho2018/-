@@ -4,6 +4,7 @@ import { formatMoney, formatDate, resolveUserName, buildShiftWhatsAppMessage, ge
 import { printZReportHtml, buildZReportHtml, printShiftHandoverVoucherHtml } from '../../../utils/printHelper';
 import { shareDocument, getPreferredShareFormat, getManagerPhone } from '../../../utils/shareHelper';
 import { useApp } from '../../../context/AppContext';
+import { effectivePendingHandover } from '../../../utils/useShiftMetrics';
 
 import { ShiftHandoverModal } from '../ShiftHandoverModal';
 
@@ -17,8 +18,17 @@ export const ShiftsHistoryTab = ({ isAdmin }) => {
     // activeShift و hasPermission كانا مستخدمين هنا بدون تعريف (يعطّلان سجل الورديات)
     activeShift,
     hasPermission,
-    storeInfo
+    storeInfo,
+    confirmDialog,
+    userShifts
   } = useApp();
+
+  // الورديات المفتوحة تدخل الحساب: الوردية التالية هي التي تحمل النقد المُرحَّل،
+  // وبدونها يبدو كل نقد مغلق معلّقاً وإن كان في الدرج فعلاً.
+  const allShiftsForPending = useMemo(() => ([
+    ...(Array.isArray(shiftsHistory) ? shiftsHistory : []),
+    ...Object.values(userShifts || {}).filter(s => s && s.isOpen === true),
+  ]), [shiftsHistory, userShifts]);
 
   const [selectedHistoryShift, setSelectedHistoryShift] = useState(null);
   const [handoverShiftTarget, setHandoverShiftTarget] = useState(null);
@@ -29,14 +39,20 @@ export const ShiftsHistoryTab = ({ isAdmin }) => {
   const [historySearchQuery, setHistorySearchQuery] = useState('');
   const [historyDateFilter, setHistoryDateFilter] = useState('all'); // all, today, yesterday, week, month
 
-  const handleDeleteHistoryShift = (shiftId) => {
+  const handleDeleteHistoryShift = async (shiftId) => {
     if (!canDeleteShifts) {
       alert('⛔ عذراً، حذف تقارير الورديات السابقة مقتصر حصراً على مدير النظام!');
       return;
     }
     const shift = shiftsHistory.find(s => s.id === shiftId);
     const shiftName = resolveUserName(shift, users) || 'الوردية';
-    if (window.confirm(`⚠️ تحذير إداري:\nهل أنت متأكد من حذف تقرير وردية (${shiftName}) نهائياً من الأرشيف؟\nلا يمكن التراجع عن هذا الإجراء.`)) {
+    const ok = await confirmDialog({
+      title: '⚠️ تحذير إداري',
+      message: `هل أنت متأكد من حذف تقرير وردية (${shiftName}) نهائياً من الأرشيف؟\n\nلا يمكن التراجع عن هذا الإجراء.`,
+      confirmText: 'حذف التقرير',
+      tone: 'danger'
+    });
+    if (ok) {
       deleteShiftRecord(shiftId);
       if (selectedHistoryShift?.id === shiftId) setSelectedHistoryShift(null);
     }
@@ -314,17 +330,39 @@ export const ShiftsHistoryTab = ({ isAdmin }) => {
                   </div>
 
                   {/* حالة استلام النقدية وتبرئة الذمة من الإدارة */}
+                  {/*
+                    «بانتظار استلام الإدارة» كانت تُعرض لكل وردية غير مستلَمة —
+                    حتى التي رُحّل نقدها رصيداً افتتاحياً للوردية التالية. فيرى
+                    المدير مطالبةً بمالٍ **ما زال في الدرج** محسوباً هناك، وزرّ
+                    استلامٍ يُدخله الخزينة فيظهر في المكانين معاً. الحالة تُشتقّ
+                    الآن من `effectivePendingHandover` — نفس المصدر الذي يحسب
+                    عهدة الكاشير في الخزينة، فلا تقول شاشةٌ صفراً وأخرى ٢٠٠.
+                  */}
+                  {(() => {
+                  const isReceived = shift.handoverStatus === 'received' || shift.handoverStatus === 'settled';
+                  const stillPending = effectivePendingHandover(shift, allShiftsForPending);
+                  const isRolled = !isReceived && stillPending <= 0.005;
+                  return (
                   <div className={`p-2 rounded-xl flex items-center justify-between text-[11px] ${
-                    shift.handoverStatus === 'received' 
-                      ? 'bg-emerald-50/80 border border-emerald-200 text-emerald-900' 
-                      : 'bg-amber-50/80 border border-amber-200 text-amber-900'
+                    isReceived
+                      ? 'bg-emerald-50/80 border border-emerald-200 text-emerald-900'
+                      : isRolled
+                        ? 'bg-sky-50/80 border border-sky-200 text-sky-900'
+                        : 'bg-amber-50/80 border border-amber-200 text-amber-900'
                   }`}>
                     <div className="flex items-center gap-1.5">
-                      {shift.handoverStatus === 'received' ? (
+                      {isReceived ? (
                         <>
                           <CheckCircle className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
                           <span>
                             <strong>تم استلام الكاش:</strong> {shift.handoverReceivedBy || 'المدير'}
+                          </span>
+                        </>
+                      ) : isRolled ? (
+                        <>
+                          <CheckCircle className="w-3.5 h-3.5 text-sky-600 shrink-0" />
+                          <span>
+                            <strong>رُحّل للوردية التالية:</strong> النقد في درج الكاشير ومحسوب هناك
                           </span>
                         </>
                       ) : (
@@ -332,12 +370,15 @@ export const ShiftsHistoryTab = ({ isAdmin }) => {
                           <Clock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
                           <span>
                             <strong>بعهدة الكاشير:</strong> بانتظار استلام الإدارة
+                            {stillPending > 0.005 && (
+                              <strong className="font-mono"> ({formatMoney(stillPending, storeInfo.currency)})</strong>
+                            )}
                           </span>
                         </>
                       )}
                     </div>
 
-                    {shift.handoverStatus === 'received' ? (
+                    {isRolled ? null : isReceived ? (
                       <button
                         type="button"
                         onClick={() => printShiftHandoverVoucherHtml(shift, storeInfo, users)}
@@ -363,6 +404,7 @@ export const ShiftsHistoryTab = ({ isAdmin }) => {
                       )
                     )}
                   </div>
+                  ); })()}
 
                   {/* شريط الإجراءات */}
                   <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs">

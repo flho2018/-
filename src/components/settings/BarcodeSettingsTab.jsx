@@ -38,7 +38,7 @@ const LiveBarcodeSvg = ({ code, symbology, barcodeHeight, barcodeTextSize, showB
 };
 
 export const BarcodeSettingsTab = () => {
-  const { storeInfo, updateStoreInfo, products } = useApp();
+  const { storeInfo, updateStoreInfo, products, confirmDialog } = useApp();
 
   const defaultSettings = {
     labelSize: '50x25',
@@ -124,8 +124,14 @@ export const BarcodeSettingsTab = () => {
     setTimeout(() => setSaveSuccess(false), 3000);
   };
 
-  const handleReset = () => {
-    if (confirm('هل أنت متأكد من استعادة الإعدادات الافتراضية لملصقات الباركود؟')) {
+  const handleReset = async () => {
+    const ok = await confirmDialog({
+      title: 'استعادة إعدادات الباركود',
+      message: 'هل أنت متأكد من استعادة الإعدادات الافتراضية لملصقات الباركود؟',
+      confirmText: 'استعادة',
+      tone: 'warning'
+    });
+    if (ok) {
       setSettings(defaultSettings);
       updateStoreInfo({
         ...storeInfo,

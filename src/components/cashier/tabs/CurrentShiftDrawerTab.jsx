@@ -8,7 +8,7 @@ import { DEFAULT_PAYMENT_ICONS } from '../../../utils/paymentIcons';
 import { useApp } from '../../../context/AppContext';
 
 
-import { computeExpectedCash, sumDrawerCashIn, sumDrawerCashOut } from '../../../utils/useShiftMetrics';
+import { computeExpectedCash, sumDrawerCashIn, sumDrawerCashOut, findLastClosedShift } from '../../../utils/useShiftMetrics';
 import { TreasuryDropModal } from '../TreasuryDropModal';
 
 export const CurrentShiftDrawerTab = ({ treasurySummary, isAdmin, setActiveTab }) => {
@@ -28,7 +28,8 @@ export const CurrentShiftDrawerTab = ({ treasurySummary, isAdmin, setActiveTab }
     currentUser,
     users,
     userShifts,
-    hasPermission
+    hasPermission,
+    confirmDialog
   } = useApp();
 
   const [isMovementModalOpen, setIsMovementModalOpen] = useState(false);
@@ -43,17 +44,12 @@ export const CurrentShiftDrawerTab = ({ treasurySummary, isAdmin, setActiveTab }
   const [closeNotes, setCloseNotes] = useState('');
   const [lastClosedReport, setLastClosedReport] = useState(null);
   // البحث عن آخر وردية مغلقة لنفس المستخدم الحالي لاستخراج الرصيد المرحل تلقائياً
-  const lastUserClosedShift = useMemo(() => {
-    const currentUid = currentUser?.id || 'admin';
-    const currentName = currentUser?.name;
-    return (shiftsHistory || []).find(s => 
-      s.status === 'closed' && (
-        (s.userId && s.userId === currentUid) || 
-        (s.cashierId && s.cashierId === currentUid) ||
-        (s.cashierName && s.cashierName === currentName)
-      )
-    );
-  }, [shiftsHistory, currentUser]);
+  // آخر وردية مغلقة **زمنياً** — لا أول ما يصادفه في المصفوفة.
+  // انظر findLastClosedShift في useShiftMetrics.js لسبب أن الترتيب لا يُعتمد عليه.
+  const lastUserClosedShift = useMemo(
+    () => findLastClosedShift(shiftsHistory, currentUser),
+    [shiftsHistory, currentUser]
+  );
 
   const [isOpenShiftModal, setIsOpenShiftModal] = useState(false);
   const [openingCashInput, setOpeningCashInput] = useState(() => {
@@ -563,7 +559,7 @@ export const CurrentShiftDrawerTab = ({ treasurySummary, isAdmin, setActiveTab }
     setMovementReason('');
   };
 
-  const handleOpenCloseShiftModal = (targetShift = null) => {
+  const handleOpenCloseShiftModal = async (targetShift = null) => {
     if (!hasPermission('drawer_open_close')) {
       alert('⛔ ليس لديك صلاحية لإغلاق الوردية وإصدار تقرير Z!');
       return;
@@ -582,10 +578,12 @@ export const CurrentShiftDrawerTab = ({ treasurySummary, isAdmin, setActiveTab }
         alert('⛔ لا يمكنك إغلاق وردية كاشير آخر.');
         return;
       }
-      const ok = window.confirm(
-        `تنبيه: هذه وردية (${shift.cashierName || 'كاشير آخر'}) وليست ورديتك.\n\n` +
-        `سيُصدَر تقرير Z باسمه وتُقفل عهدته. متأكد من المتابعة؟`
-      );
+      const ok = await confirmDialog({
+        title: 'إغلاق وردية كاشير آخر',
+        message: `هذه وردية (${shift.cashierName || 'كاشير آخر'}) وليست ورديتك.\n\nسيُصدَر تقرير Z باسمه وتُقفل عهدته. متأكد من المتابعة؟`,
+        confirmText: 'متابعة الإغلاق',
+        tone: 'warning'
+      });
       if (!ok) return;
     }
     setShiftBeingClosed(shift);
@@ -614,13 +612,13 @@ export const CurrentShiftDrawerTab = ({ treasurySummary, isAdmin, setActiveTab }
     if (myPendingFloatTotal > 0) setOpeningCashInput(String(myPendingFloatTotal));
   }, [myPendingFloatTotal]);
 
-  const handleOpenNewShiftClick = () => {
+  const handleOpenNewShiftClick = async () => {
     if (!hasPermission('drawer_open_close')) {
       alert('⛔ ليس لديك صلاحية لفتح وردية جديدة!');
       return;
     }
     if (myOpenShift) {
-      openNewShift(0);
+      await openNewShift(0);
       return;
     }
     const defaultRollover = (lastUserClosedShift && typeof lastUserClosedShift.actualCash === 'number')
@@ -630,9 +628,9 @@ export const CurrentShiftDrawerTab = ({ treasurySummary, isAdmin, setActiveTab }
     setIsOpenShiftModal(true);
   };
 
-  const handleConfirmOpenShift = (e) => {
+  const handleConfirmOpenShift = async (e) => {
     e.preventDefault();
-    openNewShift(Number(openingCashInput) || 0);
+    await openNewShift(Number(openingCashInput) || 0);
     setIsOpenShiftModal(false);
     setLastClosedReport(null);
   };

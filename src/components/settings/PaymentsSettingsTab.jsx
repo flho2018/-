@@ -6,7 +6,7 @@ import { DEFAULT_PAYMENT_ICONS, PRESET_LOGO_LIST } from '../../utils/paymentIcon
 import { compressImageFile } from '../../utils/helpers';
 
 export const PaymentsSettingsTab = () => {
-  const { storeInfo, updateStoreInfo } = useApp();
+  const { storeInfo, updateStoreInfo, confirmDialog } = useApp();
 
   const [formData, setFormData] = useState({ ...storeInfo });
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -39,8 +39,14 @@ export const PaymentsSettingsTab = () => {
   };
 
   // إعادة تهيئة وضبط وسائل الدفع إلى الأصلية
-  const handleResetToDefaults = () => {
-    if (confirm('هل أنت متأكد من إعادة تهيئة جميع وسائل الدفع للوضع الافتراضي الأنيق واسترجاع الشعارات الأصلية؟')) {
+  const handleResetToDefaults = async () => {
+    const ok = await confirmDialog({
+      title: 'إعادة تهيئة وسائل الدفع',
+      message: 'هل أنت متأكد من إعادة تهيئة جميع وسائل الدفع للوضع الافتراضي واسترجاع الشعارات الأصلية؟',
+      confirmText: 'إعادة التهيئة',
+      tone: 'warning'
+    });
+    if (ok) {
       const resetList = INITIAL_PAYMENT_METHODS.map(m => ({
         ...m,
         enabled: true,
@@ -59,12 +65,18 @@ export const PaymentsSettingsTab = () => {
   };
 
   // حذف وسيلة دفع
-  const handleDeleteMethod = (methodId) => {
+  const handleDeleteMethod = async (methodId) => {
     if (currentMethods.length <= 1) {
       alert('يجب الإبقاء على وسيلة دفع واحدة على الأقل');
       return;
     }
-    if (confirm('هل أنت متأكد من حذف وسيلة الدفع هذه؟')) {
+    const ok = await confirmDialog({
+      title: 'حذف وسيلة دفع',
+      message: 'هل أنت متأكد من حذف وسيلة الدفع هذه؟',
+      confirmText: 'حذف',
+      tone: 'danger'
+    });
+    if (ok) {
       const updated = currentMethods.filter(m => m.id !== methodId);
       setFormData(prev => ({ ...prev, paymentMethods: updated }));
       handleSave('تم حذف وسيلة الدفع بنجاح! 🌸', updated);

@@ -4,7 +4,7 @@ import { DollarSign, Plus, ArrowDownRight, ArrowUpRight, Calendar, Trash2, X, Se
 import { formatMoney, formatDate } from '../../utils/helpers';
 
 export const ExpensesScreen = () => {
-  const { expenses, addExpense, deleteExpense, storeInfo, hasPermission, currentUser, userShifts, activeShift } = useApp();
+  const { expenses, addExpense, deleteExpense, storeInfo, hasPermission, currentUser, userShifts, activeShift, confirmDialog } = useApp();
 
   // درج مَن بالضبط؟ نعرض اسم صاحب الشاشة وحالة ورديته، لأن "الوردية النشطة"
   // غامضة حين تكون هناك أكثر من وردية مفتوحة في المتجر.
@@ -82,12 +82,18 @@ export const ExpensesScreen = () => {
     setIsAddOpen(true);
   };
 
-  const handleDeleteExpenseClick = (expId, category, amount) => {
+  const handleDeleteExpenseClick = async (expId, category, amount) => {
     if (!hasPermission('expenses_delete')) {
       alert('⛔ ليس لديك صلاحية لحذف سندات المصروفات!');
       return;
     }
-    if (confirm(`هل أنت متأكد من حذف سند المصروف (${category} - ${formatMoney(amount, storeInfo.currency)})؟`)) {
+    const ok = await confirmDialog({
+      title: 'حذف سند مصروف',
+      message: `هل أنت متأكد من حذف سند المصروف (${category} — ${formatMoney(amount, storeInfo.currency)})؟`,
+      confirmText: 'حذف',
+      tone: 'danger'
+    });
+    if (ok) {
       deleteExpense(expId);
     }
   };

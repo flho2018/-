@@ -17,7 +17,7 @@ import { compressImageFile, generateZatcaTLV } from '../../utils/helpers';
 import { checkUserPermission } from '../../utils/permissions';
 
 export const SettingsScreen = () => {
-  const { storeInfo, updateStoreInfo, currentUser } = useApp();
+  const { storeInfo, updateStoreInfo, currentUser, confirmDialog } = useApp();
 
   // ================= صلاحيات الإعدادات =================
   const canStoreInfo   = checkUserPermission(currentUser, 'settings_store_info');
@@ -393,8 +393,14 @@ export const SettingsScreen = () => {
     updateStoreInfo({ ...formData, paymentMethods: updated });
   };
 
-  const handleDeletePaymentMethod = (id) => {
-    if (window.confirm('هل أنت متأكد من حذف وسيلة الدفع هذه؟')) {
+  const handleDeletePaymentMethod = async (id) => {
+    const ok = await confirmDialog({
+      title: 'حذف وسيلة دفع',
+      message: 'هل أنت متأكد من حذف وسيلة الدفع هذه؟',
+      confirmText: 'حذف',
+      tone: 'danger'
+    });
+    if (ok) {
       const currentMethods = formData.paymentMethods || INITIAL_PAYMENT_METHODS;
       const updated = currentMethods.filter(m => m.id !== id);
       setFormData(prev => ({ ...prev, paymentMethods: updated }));

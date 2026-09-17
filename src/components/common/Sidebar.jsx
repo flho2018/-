@@ -10,7 +10,8 @@ export const Sidebar = ({ isOpen, onClose, currentTab, setCurrentTab }) => {
     logout,
     logoutFirebase,
     currentUser,
-    firebaseUser
+    firebaseUser,
+    confirmDialog
   } = useApp();
 
   if (!isOpen) return null;
@@ -167,12 +168,15 @@ export const Sidebar = ({ isOpen, onClose, currentTab, setCurrentTab }) => {
 
           <button
             type="button"
-            onClick={() => {
-              const ok = window.confirm(
-                'تسجيل خروج كامل من حساب الجهاز؟\n\n' +
-                'سيُطلب البريد وكلمة المرور عند الدخول من جديد.\n' +
-                'لتبديل الكاشير فقط استخدم "قفل الشاشة" بدلاً من هذا.'
-              );
+            onClick={async () => {
+              const ok = await confirmDialog({
+                title: 'تسجيل خروج كامل',
+                message:
+                  'سيُطلب البريد وكلمة المرور عند الدخول من جديد.\n' +
+                  'لتبديل الكاشير فقط استخدم «قفل الشاشة» بدلاً من هذا.',
+                confirmText: 'تسجيل الخروج',
+                tone: 'warning'
+              });
               if (!ok) return;
               onClose && onClose();
               logout && logout();

@@ -46,7 +46,8 @@ export const Header = ({ currentTab, setCurrentTab, toggleSidebar, toggleCartDra
     logout,
     logoutFirebase,
     firebaseUser,
-    updateStoreInfo
+    updateStoreInfo,
+    confirmDialog
   } = useApp();
 
   // لوحة المفاتيح الذكية: مفتاح سريع في الشريط العلوي ليصله الكاشير أيضاً،
@@ -367,13 +368,16 @@ export const Header = ({ currentTab, setCurrentTab, toggleSidebar, toggleCartDra
                ================================================================= */}
           <button
             type="button"
-            onClick={() => {
-              const ok = window.confirm(
-                'تسجيل خروج كامل من حساب الجهاز؟\n\n' +
-                (firebaseUser?.email ? `الحساب الحالي: ${firebaseUser.email}\n\n` : '') +
-                'سيُطلب البريد وكلمة المرور عند الدخول من جديد.\n' +
-                'لتبديل الكاشير فقط، انقر على اسم المستخدم بجانب هذا الزر.'
-              );
+            onClick={async () => {
+              const ok = await confirmDialog({
+                title: 'تسجيل خروج كامل',
+                message:
+                  (firebaseUser?.email ? `الحساب الحالي: ${firebaseUser.email}\n\n` : '') +
+                  'سيُطلب البريد وكلمة المرور عند الدخول من جديد.\n' +
+                  'لتبديل الكاشير فقط، انقر على اسم المستخدم بجانب هذا الزر.',
+                confirmText: 'تسجيل الخروج',
+                tone: 'warning'
+              });
               if (!ok) return;
               logout && logout();
               logoutFirebase && logoutFirebase();

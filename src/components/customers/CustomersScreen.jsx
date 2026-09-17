@@ -15,7 +15,8 @@ export const CustomersScreen = () => {
     invoices,
     storeInfo,
     activeShift,
-    hasPermission
+    hasPermission,
+    confirmDialog
   } = useApp();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -180,7 +181,7 @@ export const CustomersScreen = () => {
     window.open(url, '_blank');
   };
 
-  const handleSavePayment = (e) => {
+  const handleSavePayment = async (e) => {
     e.preventDefault();
 
     // =====================================================================
@@ -209,7 +210,12 @@ export const CustomersScreen = () => {
 
     const receiptObj = addCustomerPayment(selectedForPayment.id, amt, paymentData.method, paymentData.notes);
 
-    if (confirm(`✅ تم تسجيل سند القبض بمبلغ ${formatMoney(amt, storeInfo.currency)} بنجاح!\n\nهل ترغب في طباعة سند القبض للعميل الآن؟`)) {
+    if (await confirmDialog({
+      title: '✅ تم تسجيل سند القبض',
+      message: `تم تسجيل سند القبض بمبلغ ${formatMoney(amt, storeInfo.currency)} بنجاح.\n\nهل ترغب في طباعة سند القبض للعميل الآن؟`,
+      confirmText: 'طباعة السند',
+      cancelText: 'لاحقاً'
+    })) {
       if (receiptObj) {
         handlePrintReceiptVoucher(receiptObj);
       }
@@ -534,12 +540,18 @@ export const CustomersScreen = () => {
                   )}
                   {!c.isDefault && (
                     <button
-                      onClick={() => {
+                      onClick={async () => {
                         if (!hasPermission('customers_delete')) {
                           alert('⛔ ليس لديك صلاحية لحذف العملاء!');
                           return;
                         }
-                        if (confirm(`حذف العميل (${c.name})؟`)) deleteCustomer(c.id);
+                        const ok = await confirmDialog({
+                          title: 'حذف عميل',
+                          message: `حذف العميل (${c.name}) نهائياً؟`,
+                          confirmText: 'حذف',
+                          tone: 'danger'
+                        });
+                        if (ok) deleteCustomer(c.id);
                       }}
                       className="p-1.5 bg-rose-50 text-rose-600 hover:bg-rose-100 rounded-lg"
                       title="حذف العميل"

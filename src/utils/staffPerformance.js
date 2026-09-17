@@ -4,7 +4,7 @@
 //  فُصل عن شاشة التقرير عمداً: الأرقام التي يُبنى عليها راتب متغيّر يجب أن
 //  تكون قابلة للقراءة والمراجعة والاختبار وحدها، لا مدفونة داخل JSX.
 //
-//  ثلاثة أخطاء في الحساب السابق يصحّحها هذا الملف:
+//  أربعة أخطاء في الحساب السابق يصحّحها هذا الملف:
 //
 //  ١. نسبة الالتزام: كانت تطرح ورديةً واحدة إن كان للموظف أي فرق نقدي
 //     في أي وردية (hasDiscrepancy قيمة منطقية واحدة). فمن عنده ٨ ورديات
@@ -18,6 +18,10 @@
 //  ٣. المرتجعات: كانت تُنسب لفترة الفاتورة الأصلية لا لتاريخ الإرجاع،
 //     فبيعٌ في يناير يُرجَع في فبراير لا يظهر في تقرير فبراير إطلاقاً —
 //     يُدفع بونصه ولا يُسترد. هنا المرتجع يدخل الفترة التي وقع فيها.
+//
+//  ٤. مجمل الربح: كان (سعر البيع − التكلفة) × الكمية — رقمٌ يتجاهل الخصم
+//     والضريبة معاً، فيُصرف البونص على ربح لم يدخل الصندوق. التعريف هنا
+//     صار هو نفسه المعتمد في التقارير المالية. انظر القسم أدناه.
 // =========================================================================
 
 const num = (v) => Number(v) || 0;
@@ -68,6 +72,93 @@ export const refundOwnerOf = (inv) =>
 
 export const sellerOf = (inv) => inv?.cashierId || inv?.userId || null;
 
+// =========================================================================
+//  مجمل الربح: ما دخل الصندوق فعلاً، لا فرق السعر المعلن
+// =========================================================================
+//  الصيغة القديمة (سعر البيع − التكلفة) × الكمية كانت تتجاهل ثلاثة مبالغ
+//  يدفعها المتجر أو لا يملكها أصلاً:
+//    • خصم البند   — الكاشير يخصم من الصنف نفسه، فالسعر المعلن لم يُقبَض.
+//    • الخصم العام — خصمٌ على الفاتورة كلها لا يظهر في سعر أي بند.
+//    • الضريبة     — في الأسعار الشاملة يكون جزء من الرقم المقبوض أمانةً
+//                    للدولة، فليس إيراداً للمتجر ولا ربحاً يُبنى عليه بونص.
+//  مثال حقيقي: صنف بـ ١٠٠ تكلفته ٦٠، بخصم عام ٢٠، والأسعار شاملة ١٥٪:
+//  القديم يقول الربح ٤٠، والصحيح ٨٠ − ١٠٫٤٣ ضريبة − ٦٠ تكلفة = ٩٫٥٧.
+//  أي أن البونص كان يُصرف على أربعة أضعاف ربحٍ لم يتحقّق.
+//
+//  التعريف المعتمد هنا هو **نفسه** المستعمل في التقارير المالية
+//  (ReportsScreen.jsx: grossProfit = totalSales − totalTax − COGS)، عمداً:
+//  رقم الموظف ورقم المتجر عن الفاتورة الواحدة يجب أن يكونا واحداً، وإلا
+//  عاد المتجر إلى مشكلته المزمنة — عدّة صيغ لنفس المعنى تتطابق بالصدفة.
+// =========================================================================
+
+// نفرّق بين حقل قيمته صفر وحقل غائب: الغائب يعني «أعد بناء الرقم من
+// البنود»، والصفر يعني «صفر» فعلاً. `Number(undefined)` تُضيّع هذا الفرق.
+const savedNum = (v) => {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+
+// تكلفة البضاعة المباعة في الفاتورة. `costAtSale` مثبَّتة على البند لحظة
+// البيع فلا يتغيّر ربح الشهر الماضي إذا رفع المورد سعره اليوم. والبدائل
+// للفواتير التي سبقت هذا الحقل — بنفس ترتيب التقارير المالية.
+export const invoiceCOGS = (inv) =>
+  (inv?.items || []).reduce((s, it) => {
+    const qty = num(it.qty ?? it.quantity ?? 1);
+    return s + num(it.costAtSale ?? it.costPrice ?? it.product?.costPrice) * qty;
+  }, 0);
+
+// الإيراد الصافي للفاتورة: بعد كل الخصومات وبلا ضريبة.
+export const invoiceNetRevenue = (inv) => {
+  if (!inv) return 0;
+
+  // المسار الأول — وهو مسار كل فاتورة أصدرها البرنامج:
+  // `total` مخزَّن بعد خصومات البنود والخصم العام معاً، و`taxAmount` مخزَّن
+  // معه. فطرحه يعطي الإيراد الصافي في الحالتين بلا تفريع: في الأسعار
+  // الشاملة الضريبة داخل `total` فتخرج منه، وفي غير الشاملة هي مضافة فوقه
+  // فتخرج كذلك. وفاتورة بلا حقل ضريبة أصلاً هي فاتورة لم تُحصَّل عنها
+  // ضريبة — لا فاتورة ضريبتها مجهولة.
+  const total = savedNum(inv.total);
+  if (total !== null) return total - num(inv.taxAmount);
+
+  // =====================================================================
+  //  المسار الثاني — فواتير قديمة/ناقصة لا تحمل إجمالاً محفوظاً
+  // =====================================================================
+  //  نُعيد بناء الرقم بنفس ترتيب شاشة الدفع (getCartTotals): خصومات
+  //  البنود ثم الخصم العام ثم الضريبة. والترتيب ليس تفصيلاً: احتساب
+  //  الضريبة قبل الخصم يعطي رقماً أكبر دائماً.
+  //  و`inv.discount` يحمل **مجموع** الخصمين (البند + العام) كما تكتبه
+  //  شاشة الدفع، فطرحه من مجموع البنود يوزّع الخصم العام على الفاتورة
+  //  كلها بالتناسب — وهو المطلوب. ولا نقصّ كل بند على حدة لأن شاشة الدفع
+  //  تقصّ المجموع وحده، فالقصّ البندي يُخرج رقماً يخالف الإجمالي المطبوع
+  //  على الفاتورة التي بيد العميل.
+  // =====================================================================
+  let gross = 0;
+  let itemDiscounts = 0;
+  (inv.items || []).forEach(it => {
+    const qty = num(it.qty ?? it.quantity ?? 1);
+    gross += num(it.price ?? it.unitPrice) * qty;
+    itemDiscounts += num(it.discount);
+  });
+
+  const saved = savedNum(inv.discount);
+  const discount = Math.min(gross, Math.max(0, saved !== null ? saved : itemDiscounts));
+  const afterDiscount = gross - discount;
+
+  const rate = num(inv.taxRate);
+  if (inv.taxEnabled === false || rate <= 0) return afterDiscount;
+  // الافتراض «شاملة» يطابق افتراض المتجر نفسه (taxInclusive !== false).
+  return inv.taxInclusive !== false ? afterDiscount / (1 + rate / 100) : afterDiscount;
+};
+
+// الرقم الذي يُبنى عليه البونص. يُستعمل للبيع وللمرتجع معاً بنفس التعريف،
+// فمبيعةٌ أُرجعت كاملةً تُصفّر ربحها بالضبط ولا تترك بقيّة يُصرف عليها بونص.
+export const computeInvoiceProfit = (inv) => {
+  const netRevenue = invoiceNetRevenue(inv);
+  const cogs = invoiceCOGS(inv);
+  return { netRevenue, cogs, profit: netRevenue - cogs };
+};
+
 const emptyStats = (u) => ({
   id: u.id,
   name: (u.name || 'موظف').trim(),
@@ -78,14 +169,19 @@ const emptyStats = (u) => ({
 
   // المبيعات
   invoicesCount: 0,
-  grossSales: 0,          // إجمالي الفواتير المكتملة في الفترة
+  grossSales: 0,          // إجمالي الفواتير المكتملة في الفترة (بالضريبة)
   discountsGiven: 0,
   itemsSold: 0,
-  grossProfit: 0,         // (سعر البيع − التكلفة) × الكمية
+  // مفكوكة عمداً إلى طرفيها ليكون الربح قابلاً للمراجعة بالجمع لا بالثقة:
+  salesExTax: 0,          // الإيراد بعد الخصومات وبلا ضريبة
+  cogs: 0,                // تكلفة البضاعة المباعة
+  grossProfit: 0,         // salesExTax − cogs
 
   // المرتجعات — بتاريخ الإرجاع لا تاريخ البيع
   refundsCount: 0,
   refundsAmount: 0,
+  refundedRevenueExTax: 0,
+  refundedCogs: 0,
   refundedProfit: 0,
   refundsChargedNotSold: 0,   // مرتجعات حُمّلت عليه لفاتورة لم يبعها هو
 
@@ -147,11 +243,12 @@ export const computeStaffPerformance = ({
         if (owner) {
           owner.refundsCount += 1;
           owner.refundsAmount += num(inv.total);
-          const prof = (inv.items || []).reduce((s, it) => {
-            const qty = num(it.qty ?? it.quantity ?? 1);
-            return s + (num(it.price ?? it.unitPrice) - num(it.costAtSale)) * qty;
-          }, 0);
-          owner.refundedProfit += prof;
+          // بنفس تعريف ربح البيع حرفياً — وإلا لم يتصافَ البيع مع مرتجعه
+          // وبقيت بقيّة ربحٍ وهمية يُصرف عليها بونص.
+          const back = computeInvoiceProfit(inv);
+          owner.refundedRevenueExTax += back.netRevenue;
+          owner.refundedCogs += back.cogs;
+          owner.refundedProfit += back.profit;
           if (sellerOf(inv) && refundOwnerOf(inv) !== sellerOf(inv)) {
             owner.refundsChargedNotSold += num(inv.total);
           }
@@ -169,10 +266,15 @@ export const computeStaffPerformance = ({
     staff.grossSales += num(inv.total);
     staff.discountsGiven += num(inv.discount);
 
+    // الربح يُحسب للفاتورة كوحدة لا بجمع فروق البنود: الخصم العام لا يخصّ
+    // بنداً بعينه، والضريبة تُستخرج من الإجمالي بعد الخصم.
+    const sale = computeInvoiceProfit(inv);
+    staff.salesExTax += sale.netRevenue;
+    staff.cogs += sale.cogs;
+    staff.grossProfit += sale.profit;
+
     (inv.items || []).forEach(it => {
-      const qty = num(it.qty ?? it.quantity ?? 1);
-      staff.itemsSold += qty;
-      staff.grossProfit += (num(it.price ?? it.unitPrice) - num(it.costAtSale)) * qty;
+      staff.itemsSold += num(it.qty ?? it.quantity ?? 1);
     });
   });
 
@@ -217,6 +319,8 @@ export const computeStaffPerformance = ({
   const list = Object.values(map).map(s => {
     const netSales = s.grossSales - s.refundsAmount;
     const netProfit = s.grossProfit - s.refundedProfit;
+    // الوعاء الذي جاء منه الربح فعلاً (بلا ضريبة): netProfit = هذا − التكلفة
+    const netRevenueExTax = s.salesExTax - s.refundedRevenueExTax;
     const hours = s.workMs / 3600000;
     // لا نُلمّع الأرقام بقسمة على ربع ساعة وهمي: دون ١٥ دقيقة فعلية
     // لا يوجد معدّل ساعي ذو معنى، فنقول ذلك صراحةً بدل رقم مضلّل.
@@ -226,6 +330,10 @@ export const computeStaffPerformance = ({
       ...s,
       netSales,
       netProfit,
+      netRevenueExTax,
+      // المقام مبيعات بالضريبة عمداً: هو نفس مقام «هامش الربح» في التقارير
+      // المالية (grossProfit ÷ totalSales)، ورقمان بنفس الاسم على شاشتين
+      // يجب أن يُقاسا بنفس المسطرة ولو كان الأدقّ محاسبياً قسمته على الصافي.
       profitMargin: netSales > 0 ? (netProfit / netSales) * 100 : 0,
       avgTicket: s.invoicesCount > 0 ? s.grossSales / s.invoicesCount : 0,
       itemsPerInvoice: s.invoicesCount > 0 ? s.itemsSold / s.invoicesCount : 0,
@@ -286,8 +394,10 @@ export const computeStaffPerformance = ({
 //  يُضبط لكل موظف في شاشة المستخدمين. القاعدة تُطبَّق على قاعدة احتساب
 //  يختارها صاحب المتجر:
 //    net_sales    صافي المبيعات بعد المرتجعات
-//    gross_profit مجمل الربح (سعر البيع − التكلفة) — الأعدل، لأن البونص
-//                 على الإيراد وحده يُغري ببيع الرخيص كثيراً وبالخصومات
+//    gross_profit مجمل الربح (الإيراد بعد الخصم وبلا ضريبة − التكلفة) —
+//                 الأعدل، لأن البونص على الإيراد وحده يُغري ببيع الرخيص
+//                 كثيراً وبالخصومات. ومنذ تصحيح تعريف الربح صار الخصم
+//                 الذي يمنحه الموظف يُنقص بونصه هو، وهذا هو المقصود.
 //    invoices     عدد الفواتير
 //
 //  والأنواع:

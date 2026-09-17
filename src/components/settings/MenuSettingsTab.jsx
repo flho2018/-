@@ -3,7 +3,7 @@ import { useApp } from '../../context/AppContext';
 import { Eye, EyeOff, ArrowUp, ArrowDown, Save, CheckCircle, RotateCcw, LayoutDashboard, ShoppingCart, Receipt, Package, Users, Truck, DollarSign, PieChart, Settings } from 'lucide-react';
 
 export const MenuSettingsTab = () => {
-  const { storeInfo, updateStoreInfo } = useApp();
+  const { storeInfo, updateStoreInfo, confirmDialog } = useApp();
 
   const allModulesDef = {
     dashboard: { id: 'dashboard', label: 'الرئيسية / لوحة التحكم', icon: LayoutDashboard, desc: 'إحصائيات المبيعات والوردية' },
@@ -67,8 +67,14 @@ export const MenuSettingsTab = () => {
     setTimeout(() => setSaveSuccess(false), 3000);
   };
 
-  const handleReset = () => {
-    if (confirm('هل أنت متأكد من استعادة الترتيب الافتراضي وإظهار جميع القوائم؟')) {
+  const handleReset = async () => {
+    const ok = await confirmDialog({
+      title: 'استعادة ترتيب القوائم',
+      message: 'هل أنت متأكد من استعادة الترتيب الافتراضي وإظهار جميع القوائم؟',
+      confirmText: 'استعادة',
+      tone: 'warning'
+    });
+    if (ok) {
       setOrder(defaultOrder);
       setVisibility({});
       updateStoreInfo({

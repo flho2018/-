@@ -18,7 +18,7 @@ import { checkUserPermission } from '../../utils/permissions';
 import { buildReceiptHtml, printHtmlDirectly } from '../../utils/printHelper';
 
 export const ReceiptModal = ({ isOpen, onClose, invoice, onNewSale }) => {
-  const { storeInfo, users, customers, currentUser } = useApp();
+  const { storeInfo, users, customers, currentUser, promptDialog } = useApp();
   const [qrDataUrl, setQrDataUrl] = useState('');
   const [isExportingImage, setIsExportingImage] = useState(false);
   const [toastMessage, setToastMessage] = useState(null);
@@ -174,7 +174,14 @@ export const ReceiptModal = ({ isOpen, onClose, invoice, onNewSale }) => {
     const text = buildInvoiceWhatsAppMessage(invoice, storeInfo);
     let customerPhone = (invoice.customer?.phone && invoice.customer?.phone !== '-' && invoice.customer?.phone !== '0500000000') ? invoice.customer.phone : '';
     if (!customerPhone) {
-      const promptPhone = prompt('أدخل رقم جوال العميل للإرسال عبر الواتساب (أو اضغط موافق لاختيار المحادثة من الواتساب):', '');
+      const promptPhone = await promptDialog({
+        title: 'إرسال عبر الواتساب',
+        message: 'أدخل رقم جوال العميل، أو اتركه فارغاً لاختيار المحادثة من الواتساب.',
+        placeholder: '05xxxxxxxx',
+        inputMode: 'numeric',
+        confirmText: 'فتح الواتساب'
+      });
+      if (promptPhone === null) return;   // إلغاء صريح: لا يُفتح الواتساب
       if (promptPhone && promptPhone.trim()) {
         customerPhone = promptPhone.trim();
       }
@@ -264,7 +271,13 @@ export const ReceiptModal = ({ isOpen, onClose, invoice, onNewSale }) => {
         // 3. فتح الواتساب مباشرة برقم العميل ورسالة الفاتورة (دون أي نافذة مشاركة لويندوز)
         let customerPhone = (invoice.customer?.phone && invoice.customer?.phone !== '-' && invoice.customer?.phone !== '0500000000') ? invoice.customer.phone : '';
         if (!customerPhone) {
-          const promptPhone = prompt('أدخل رقم جوال العميل للإرسال عبر الواتساب (أو اضغط موافق لاختيار المحادثة من الواتساب):', '');
+          const promptPhone = await promptDialog({
+            title: 'إرسال عبر الواتساب',
+            message: 'أدخل رقم جوال العميل، أو اتركه فارغاً لاختيار المحادثة من الواتساب.',
+            placeholder: '05xxxxxxxx',
+            inputMode: 'numeric',
+            confirmText: 'فتح الواتساب'
+          });
           if (promptPhone && promptPhone.trim()) {
             customerPhone = promptPhone.trim();
           }

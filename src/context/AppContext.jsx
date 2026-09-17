@@ -16,13 +16,18 @@ import { auth } from '../utils/firebase';
 import { getRoleByEmail } from '../utils/authUsers';
 import { measureClockSkew, describeSkew, isSkewDangerous } from '../utils/clockSkew';
 import {
-  filterInvoicesByShift, filterDrawerTxByShift, calculateShiftCashRefunds,
-  classifyInvoicePayments, computeExpectedCash, sumDrawerCashIn, sumDrawerCashOut
+  // `calculateShiftCashRefunds` لم تعد تُستورد: صيغتها تسقط على منفّذ
+  // المرتجع عند عدم تطابق معرّف الوردية، فتُحمِّل درجاً عجزاً لم يخرج منه.
+  // البديل داخل هذا الملف: `isRefundChargedToShift`.
+  filterInvoicesByShift, filterDrawerTxByShift,
+  classifyInvoicePayments, computeExpectedCash, sumDrawerCashIn, sumDrawerCashOut,
+  findLastClosedShift, effectivePendingHandover, isHandoverPending
 } from '../utils/useShiftMetrics';
 import { playGentleNotificationSound } from '../utils/soundHelper';
 import { hashPin, verifyPin, hashNfcCard, verifyNfcCard, isHashedPin, validatePinStrength } from '../utils/security';
 import { logAudit as logAuditCloud } from '../utils/audit';
 import { idbGet, idbSet, safeLocalStorageSet, migrateLocalStorageToIndexedDB } from '../utils/idbStorage';
+import { AppDialogHost } from '../components/common/AppDialogHost';
 
 const AppContext = createContext();
 
@@ -48,6 +53,65 @@ const pickNewerShift = (localSh, remoteSh) => {
   const rT = t(remoteSh);
   if (lT > rT) return localSh;
   return remoteSh;
+};
+
+// =====================================================================
+//  تدوير كل مبلغ على هللتين قبل كتابته في عدّاد نقدي
+// =====================================================================
+//  عدّادات الوردية تُبنى بجمع عائم متتابع: ثلاث فواتير بـ ١٠٫١٠ تُنتج
+//  30.299999999999997 لا 30.30. الشاشة لا تفضح هذا لأنها تقرّب عند
+//  العرض — لكنه ينفجر حيث يُقارَن رقمٌ برقم: عند الإغلاق تصير
+//  `difference = actual − expected` مساوية ‎-3.55e-15 بدل صفر، فدرجٌ
+//  مطابق تماماً يطبع في تقرير الوردية «⚠️ الفارق: +0.00 (زيادة)»،
+//  ويدخل هذا «الاختلال» الوهمي في نسبة مطابقة الكاشير وفي بونصه.
+//  القاعدة: المبلغ يُدوَّر لحظة **الكتابة** في العدّاد لا لحظة عرضه،
+//  وإلا بقي الخطأ مخزَّناً ويتراكم مع كل فاتورة تالية.
+//  وتصفير الـ«صفر السالب» مقصود: `Math.round(-3.55e-15 * 100) / 100` تُنتج
+//  `-0`، و`-0 === 0` صحيح في المقارنة لكن `toLocaleString('ar-SA')` تطبعه
+//  بإشارة سالبة — فيخرج الفارق «‎-٠٫٠٠» في التقرير وهو نفس ما جئنا نمنعه.
+const roundMoney = (n) => {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return 0;
+  const r = Math.round(v * 100) / 100;
+  return r === 0 ? 0 : r;
+};
+
+// =====================================================================
+//  المرتجع يُحتسب على الوردية التي خرج منها المال — لا على من ضغط الزر
+// =====================================================================
+//  حركة درج المرتجع تُكتب بوردية **البائع** إن كانت مفتوحة
+//  (`shiftId: targetShift.id` و `userId: shiftUid` في `refundInvoice`)،
+//  لأن المئة خرجت من درجه هو. لكن فلترة المرتجعات عند الإقفال كانت —
+//  متى لم يطابق `refundShiftId` وردية المُقفِل — **تسقط** إلى مطابقة
+//  المنفّذ (`refundedBy` / `refundedByUserId`). فالمرتجع الواحد كان
+//  يُحتسب مرتين: مرةً على البائع بمطابقة المعرّف، ومرةً على المنفّذ
+//  بالسقوط.
+//  مثاله الحقيقي: نايف باع فاتورة نقدية ١٠٠، وسعد استرجعها ووردية نايف
+//  مفتوحة. المال خرج من درج نايف فعلاً، ومع ذلك ظهر في إقفال سعد **عجز
+//  ١٠٠ لم يمرّ بدرجه قط** — يُخصم من انضباطه وبونصه ويُلاحَق به.
+//  القاعدة الآن: المعرّف الصريح للوردية المُحمَّلة هو الحاسم **في
+//  الاتجاهين** — إن وُجد ولم يطابق فالجواب «لا»، ولا يُسقَط على المنفّذ.
+//  ومطابقة المنفّذ بالوقت آخر ملاذ لفواتير قديمة استُرجعت قبل وجود هذه
+//  الحقول، وهي وقتها صحيحة لأن الخصم كان يقع على وردية المنفّذ دائماً.
+// =====================================================================
+const isRefundChargedToShift = (inv, shift, uid, uname) => {
+  if (!inv || inv.status !== 'refunded') return false;
+
+  // (١) معرّف الوردية التي خرج منها المال — نفس ما كُتب في حركة الدرج
+  if (inv.refundShiftId && shift?.id) return inv.refundShiftId === shift.id;
+
+  // (٢) لا معرّف وردية لكن صاحب الدرج مسجَّل — نفس `userId` في حركة الدرج
+  if (inv.refundChargedUserId && uid) return inv.refundChargedUserId === uid;
+
+  // (٣) آخر ملاذ: سجل قديم بلا أي من الحقلين
+  if (!inv.refundedAt) return false;
+  const openTime = shift?.openedAt ? new Date(shift.openedAt).getTime() : 0;
+  const refTime = new Date(inv.refundedAt).getTime();
+  if (!Number.isFinite(refTime) || refTime < openTime) return false;
+  return Boolean(
+    (uid && (inv.refundedByUserId === uid || inv.refundedBy === uid)) ||
+    (uname && inv.refundedBy === uname)
+  );
 };
 
 export const AppProvider = ({ children }) => {
@@ -483,6 +547,57 @@ export const AppProvider = ({ children }) => {
       if (liveAlertTimerRef.current) clearTimeout(liveAlertTimerRef.current);
     };
   }, []);
+
+  // =====================================================================
+  //  نوافذ التأكيد والإدخال داخل التطبيق (بديل confirm / prompt)
+  // =====================================================================
+  //  نافذة المتصفّح توقف خيط الجافاسكربت كله: لا مزامنة تُرسل، ولا لقطة
+  //  واردة تُعالَج، ولا لوحة مفاتيح افتراضية تعمل معها على شاشة لمس.
+  //  البديل هنا يُرجع وعداً بنفس دلالة الدوال الأصلية:
+  //    confirmDialog → true/false   •   promptDialog → نصّ أو null
+  //  فيبقى منطق المستدعي كما هو، ويتغيّر شكل السؤال لا معناه.
+  //
+  //  الحلّالات (resolvers) في `useRef` لا في الحالة: الوعد يجب أن يُحسم
+  //  ولو أُعيد تصيير المزوّد عشر مرات بينهما، وحفظها في state كان يعني
+  //  ضياعها مع أي تحديث متزامن — أي دالة تنتظر للأبد بلا خطأ ظاهر.
+  const [dialogQueue, setDialogQueue] = useState([]);
+  const dialogResolversRef = useRef(new Map());
+  const dialogSeqRef = useRef(0);
+
+  const resolveDialog = useCallback((id, value) => {
+    const resolver = dialogResolversRef.current.get(id);
+    dialogResolversRef.current.delete(id);
+    setDialogQueue(prev => prev.filter(d => d.id !== id));
+    if (resolver) resolver(value);
+  }, []);
+
+  const openDialog = useCallback((config) => new Promise((resolve) => {
+    dialogSeqRef.current += 1;
+    const id = dialogSeqRef.current;
+    dialogResolversRef.current.set(id, resolve);
+    setDialogQueue(prev => [...prev, { ...(config || {}), id }]);
+  }), []);
+
+  // عند إزالة المزوّد (إغلاق التطبيق أو إعادة تحميل) تُحسم كل الوعود
+  // المعلّقة بالإلغاء. بدون هذا يبقى كل مستدعٍ ينتظر وعداً لن يُحسم،
+  // فتتراكم دوالّ معلّقة في الذاكرة بلا أن يظهر شيء في الشاشة.
+  useEffect(() => {
+    const resolvers = dialogResolversRef.current;
+    return () => {
+      resolvers.forEach(resolve => { try { resolve(null); } catch (e) { /* تجاهل */ } });
+      resolvers.clear();
+    };
+  }, []);
+
+  const confirmDialog = useCallback((options) => {
+    const opt = typeof options === 'string' ? { message: options } : (options || {});
+    return openDialog({ ...opt, kind: 'confirm' }).then(v => v === true);
+  }, [openDialog]);
+
+  const promptDialog = useCallback((options) => {
+    const opt = typeof options === 'string' ? { message: options } : (options || {});
+    return openDialog({ ...opt, kind: 'prompt' }).then(v => (typeof v === 'string' ? v : null));
+  }, [openDialog]);
 
   // حالة المزامنة السحابية
   const [syncStatus, setSyncStatus] = useState(syncEngine.status);
@@ -1504,7 +1619,7 @@ export const AppProvider = ({ children }) => {
   useEffect(() => { activeShiftRef.current = activeShift; }, [activeShift]);
 
   // عمليات سلة المشتريات
-  const addToCart = (product, qty = 1) => {
+  const addToCart = async (product, qty = 1) => {
     if (!product || !product.id) return false;
     // حماية صارمة: منع إضافة منتجات للسلة نهائياً بدون وردية مفتوحة للمستخدم الحالي
     const isShiftValidAndOpen = (sh) => {
@@ -1538,11 +1653,15 @@ export const AppProvider = ({ children }) => {
         .reduce((sum, ci) => sum + (Number(ci.qty) || 0), 0);
       const wanted = inCart + (Number(qty) || 1);
       if (wanted > available) {
-        const ok = window.confirm(
-          `⚠️ الكمية المطلوبة من (${product.name}) أكبر من المتوفر بالمخزون.\n\n` +
-          `المتوفر: ${available} • في السلة: ${inCart} • المطلوب: ${wanted}\n\n` +
-          `المتابعة ستجعل رصيد الصنف بالسالب. هل تريد المتابعة؟`
-        );
+        const ok = await confirmDialog({
+          title: '⚠️ الكمية أكبر من المخزون',
+          message:
+            `الكمية المطلوبة من (${product.name}) أكبر من المتوفر بالمخزون.\n\n` +
+            `المتوفر: ${available} • في السلة: ${inCart} • المطلوب: ${wanted}\n\n` +
+            `المتابعة ستجعل رصيد الصنف بالسالب. هل تريد المتابعة؟`,
+          confirmText: 'متابعة البيع',
+          tone: 'warning'
+        });
         if (!ok) return false;
       }
     }
@@ -1660,6 +1779,26 @@ export const AppProvider = ({ children }) => {
       return Number.isFinite(n) ? n : fallback;
     };
 
+    // =====================================================================
+    //  خصم صنف أكبر من قيمة سطره كان يُخزَّن في الفاتورة كما أُدخل
+    // =====================================================================
+    //  سطر قيمته ١٠٠ ر.س أُدخل عليه خصم ٥٠٠: الإجمالي يخرج صفراً (صحيح،
+    //  لأن `discountedTotal` مقصوص بـ `Math.max(0, …)`) — لكن الفاتورة
+    //  كانت تُحفظ بـ `discount: 500` بجانب `subtotal: 100`، أي خصمٌ أكبر
+    //  من المبيعات نفسها. وكل تقرير يجمع الخصومات (تقرير الوردية، Z-Report،
+    //  هامش الربح) يطرح ٥٠٠ من مبيعات لم تتجاوز ١٠٠ فيُظهر خسارة لم تقع.
+    //  والخصم السالب يفعل العكس: يرفع صافي السطر فوق قيمته الحقيقية.
+    //  القصّ على المجال [0, قيمة السطر] يجعل المخزَّن مساوياً للممنوح فعلاً.
+    //  وتُرجَع القيم المقصوصة في `lineDiscounts` كي يحفظ `checkout` الرقم
+    //  الذي حُسب به الإجمالي نفسه — لا رقماً ثانياً يُشتقّ بصيغة موازية.
+    const lineDiscounts = (cart || []).map(item => {
+      const p = safeNum(item?.unitPrice ?? item?.price ?? item?.product?.sellingPrice ?? 0);
+      const q = safeNum(item?.qty ?? item?.quantity ?? 1, 1);
+      const raw = safeNum(item?.discount);
+      if (raw <= 0) return 0;
+      return Math.min(raw, Math.max(0, p * q));
+    });
+
     // 1. المجموع الإجمالي للأصناف قبل أي خصم (Gross Subtotal)
     const grossSubtotal = (cart || []).reduce((sum, item) => {
       const uPrice = safeNum(item.unitPrice ?? item.price ?? item.product?.sellingPrice ?? 0);
@@ -1667,8 +1806,8 @@ export const AppProvider = ({ children }) => {
       return sum + (uPrice * q);
     }, 0);
 
-    // 2. إجمالي خصومات الأصناف الفردية
-    const itemDiscounts = (cart || []).reduce((sum, item) => sum + (Number(item.discount) || 0), 0);
+    // 2. إجمالي خصومات الأصناف الفردية (كل خصم مقصوص على قيمة سطره أعلاه)
+    const itemDiscounts = lineDiscounts.reduce((sum, d) => sum + d, 0);
 
     // 3. الصافي بعد خصومات الأصناف وقبل الخصم العام
     const afterItemDiscounts = Math.max(0, grossSubtotal - itemDiscounts);
@@ -1680,7 +1819,17 @@ export const AppProvider = ({ children }) => {
     } else {
       globalDiscount = safeNum(cartDiscount?.value);
     }
-    globalDiscount = Math.min(afterItemDiscounts, globalDiscount);
+    // =====================================================================
+    //  خصم عام سالب كان **يرفع** الإجمالي فوق قيمة السلة
+    // =====================================================================
+    //  `Math.min` وحدها تحرس السقف ولا تحرس القاع. وسلة بـ ١٠٠ ر.س مع
+    //  `cartDiscount = { type: 'fixed', value: -50 }` كانت تُنتج إجمالياً
+    //  **١٥٠ ر.س** — لأن الخصم السالب يُطرح فيُجمع. ويكفي أن يكتب الكاشير
+    //  «-50» في حقل الخصم (أو يأتي الحقل سالباً من فاتورة معلّقة قديمة)
+    //  ليُطالَب العميل بمبلغ لم يبعه أحد، ويُحفظ في الفاتورة `discount`
+    //  سالب يرفع مبيعات اليوم في كل تقرير. الخصم مقصوص الآن على المجال
+    //  [0, الصافي بعد خصومات الأصناف]: لا يزيد الإجمالي ولا ينزل تحت الصفر.
+    globalDiscount = Math.min(afterItemDiscounts, Math.max(0, globalDiscount));
 
     // 5. إجمالي كافة الخصومات (خصومات الأصناف + الخصم العام)
     const totalDiscount = Number((itemDiscounts + globalDiscount).toFixed(2));
@@ -1690,7 +1839,21 @@ export const AppProvider = ({ children }) => {
 
     // التحقق من حالة الضريبة
     const isTaxActive = storeInfo?.taxEnabled !== false;
-    const taxRate = isTaxActive ? (Number(storeInfo?.taxRate) >= 0 ? Number(storeInfo?.taxRate) : 15) : 0;
+    // =====================================================================
+    //  نسبة ضريبة تالفة كانت تفرض ١٥٪ صامتة على فاتورة ضريبية
+    // =====================================================================
+    //  الشرط القديم `Number(storeInfo?.taxRate) >= 0` يصير `false` مع
+    //  `'abc'` (لأن `Number('abc')` = NaN وكل مقارنة معه false) ومع `-5`،
+    //  فيسقط على الافتراضي **١٥٪**: فاتورة بـ ١٠٠ ر.س تُطبع ١١٥ ر.س
+    //  ويُطبع معها إقرار ضريبي برقم لم يضبطه المالك ولا وافق عليه.
+    //  ويكفي حقلٌ أُفرغ في الإعدادات أو حُفظ نصاً ليقع هذا بلا أي تحذير.
+    //  القاعدة هنا: **قيمة غير رقمية أو سالبة ⇒ صفر**. فرضُ ضريبة لم
+    //  يطلبها أحد وطباعتها على مستند ضريبي أخطر من عدم فرضها — الأول
+    //  يُحصَّل من العميل ويُقرّ للدولة خطأً، والثاني يُلاحَظ فوراً ويُصحَّح.
+    const parsedTaxRate = Number(storeInfo?.taxRate);
+    const taxRate = isTaxActive
+      ? (Number.isFinite(parsedTaxRate) && parsedTaxRate >= 0 ? parsedTaxRate : 0)
+      : 0;
     const isTaxInclusive = storeInfo?.taxInclusive !== false;
 
     let taxAmount = 0;
@@ -1718,6 +1881,7 @@ export const AppProvider = ({ children }) => {
       subtotal: Number(grossSubtotal.toFixed(2)),
       grossSubtotal: Number(grossSubtotal.toFixed(2)),
       itemDiscounts: Number(itemDiscounts.toFixed(2)),
+      lineDiscounts,
       globalDiscount: Number(globalDiscount.toFixed(2)),
       totalDiscount,
       discount: totalDiscount,
@@ -1811,7 +1975,7 @@ export const AppProvider = ({ children }) => {
   };
 
   // إتمام عملية الدفع وإنشاء الفاتورة مع الربط الحسابي الكامل ودعم تقسيم الفاتورة المتعدد
-  const checkout = ({
+  const checkout = async ({
     paymentMethod = 'cash', // id
     paymentMethodName = 'نقداً',
     paymentMethodType = 'cash', // cash, card, online, credit, split, custom
@@ -1928,14 +2092,19 @@ export const AppProvider = ({ children }) => {
       invoiceNumber: invoiceNum,
       shiftId: effShift.id,
       date: dateStr,
-      items: cart.map(item => ({
+      items: cart.map((item, idx) => ({
         ...item,
         name: item.name || item.product?.name || 'صنف',
         price: Number(item.unitPrice ?? item.price ?? item.product?.sellingPrice ?? 0),
         unitPrice: Number(item.unitPrice ?? item.price ?? item.product?.sellingPrice ?? 0),
         quantity: Number(item.qty ?? item.quantity ?? 1),
         qty: Number(item.qty ?? item.quantity ?? 1),
-        discount: Number(item.discount || 0),
+        // الخصم يُخزَّن مقصوصاً على قيمة السطر لا كما أُدخل: الإجمالي حُسب
+        // بالمقصوص أصلاً في `getCartTotals`، فتخزين الخام هنا كان يجعل مجموع
+        // خصوم بنود الفاتورة أكبر من `subtotal` نفسه في كل تقرير يقرأها
+        // (سطر بـ ١٠٠ وخصم ٥٠٠ ⇒ فاتورة إجمالها صفر وخصمها ٥٠٠).
+        // القيمة تؤخذ من نفس الحساب لا من صيغة موازية قد تنحرف عنه.
+        discount: Number(totals.lineDiscounts?.[idx] ?? item.discount) || 0,
         // تكلفة الصنف لحظة البيع — تُثبَّت في الفاتورة حتى لا يتغيّر
         // ربح الشهور الماضية إذا تغيّر سعر المورد لاحقاً.
         costAtSale: Number(
@@ -1985,7 +2154,13 @@ export const AppProvider = ({ children }) => {
         const name = ci.product?.name || ci.name || prod?.name || 'صنف';
         return `• ${name}: المطلوب ${ci.qty} / المتوفر ${prod?.stock || 0}`;
       }).join('\n');
-      if (!confirm(`⚠️ تحذير: بعض المنتجات تتجاوز الكمية المتوفرة بالمخزون:\n\n${warnMsg}\n\nهل تريد المتابعة بالبيع رغم ذلك؟`)) {
+      const proceedShort = await confirmDialog({
+        title: '⚠️ كميات تتجاوز المخزون',
+        message: `بعض المنتجات تتجاوز الكمية المتوفرة بالمخزون:\n\n${warnMsg}\n\nهل تريد المتابعة بالبيع رغم ذلك؟`,
+        confirmText: 'متابعة البيع',
+        tone: 'warning'
+      });
+      if (!proceedShort) {
         return null;
       }
     }
@@ -2000,13 +2175,25 @@ export const AppProvider = ({ children }) => {
       .filter(d => d.id && d.delta);
 
     // تحديث الشاشة فوراً (تفاؤلياً)، ومنع الرفع الكامل للجدول لأن المزامنة تتم بالفرق
+    // =====================================================================
+    //  لا قصّ عند الصفر — المخزون السالب حقيقة تشغيلية تُرى وتُصحَّح
+    // =====================================================================
+    //  كان هنا `Math.max(0, …)` بينما `adjustStock` ترسل الفرق للسحابة
+    //  **بلا قصّ**. فالمخزون ١ ويبيع الكاشير ٣ (بعد تأكيد تحذير التجاوز):
+    //  الشاشة تقول ٠ والسحابة تقول ‎-٢. ثم يأتي الجرد فيكتب ١٠ بأساس ٠
+    //  فيُرسَل فرقٌ ‎+١٠ فوق ‎-٢ ⇒ السحابة ٨ لا ١٠. **عجزٌ صامت بوحدتين
+    //  لا يظهر في سجل التدقيق ولا في أي شاشة** — لأن الطرفين لم يعودا
+    //  يقيسان الشيء نفسه.
+    //  والصواب ليس قصّ السحابة أيضاً، بل رفع القصّ: الرصيد السالب يعني
+    //  أن المتجر باع أكثر مما كان مسجّلاً عنده، وهذه واقعة يجب أن يراها
+    //  المالك ويصحّحها بالجرد — لا أن تُخفى خلف صفر يبدو سليماً.
     isRemoteUpdateRef.current['products'] = true;
     setProducts(prevProducts => {
       const updated = (prevProducts || []).map(prod => {
         if (prod.isService) return prod;
         const d = stockDeltas.find(x => x.id === prod.id);
         if (!d) return prod;
-        return { ...prod, stock: Math.max(0, (Number(prod.stock) || 0) + d.delta) };
+        return { ...prod, stock: (Number(prod.stock) || 0) + d.delta };
       });
       try { localStorage.setItem('naif_pos_v3_products', JSON.stringify(updated)); } catch (e) {}
       return updated;
@@ -2059,14 +2246,17 @@ export const AppProvider = ({ children }) => {
         cardAdd = totals.total;
       }
 
+      // عدّادات الوردية تُدوَّر على هللتين عند كل بيعة (انظر roundMoney أعلى الملف):
+      // ثلاث فواتير بـ ١٠٫١٠ كانت تُخزَّن 30.299999999999997، فيخرج تقرير
+      // الإغلاق بفارقٍ لا وجود له ويُحسب على الكاشير عجزاً وهمياً.
       const nextActiveShift = {
         ...targetShift,
         isOpen: true,
         status: 'open',
-        cashSales: (targetShift.cashSales || 0) + cashAdd,
-        cardSales: (targetShift.cardSales || 0) + cardAdd,
-        creditSales: (targetShift.creditSales || 0) + creditAdd,
-        totalSales: (targetShift.totalSales || 0) + (cashAdd + cardAdd + creditAdd)
+        cashSales: roundMoney((targetShift.cashSales || 0) + cashAdd),
+        cardSales: roundMoney((targetShift.cardSales || 0) + cardAdd),
+        creditSales: roundMoney((targetShift.creditSales || 0) + creditAdd),
+        totalSales: roundMoney((targetShift.totalSales || 0) + (cashAdd + cardAdd + creditAdd))
       };
       setActiveShift(nextActiveShift);
       saveAndSync('active_shift', nextActiveShift, true);
@@ -2075,10 +2265,10 @@ export const AppProvider = ({ children }) => {
         const existing = uPrev[shiftUid] || targetShift;
         const updated = {
           ...existing,
-          cashSales: (existing.cashSales || 0) + cashAdd,
-          cardSales: (existing.cardSales || 0) + cardAdd,
-          creditSales: (existing.creditSales || 0) + creditAdd,
-          totalSales: (existing.totalSales || 0) + (cashAdd + cardAdd + creditAdd),
+          cashSales: roundMoney((existing.cashSales || 0) + cashAdd),
+          cardSales: roundMoney((existing.cardSales || 0) + cardAdd),
+          creditSales: roundMoney((existing.creditSales || 0) + creditAdd),
+          totalSales: roundMoney((existing.totalSales || 0) + (cashAdd + cardAdd + creditAdd)),
           updatedAt: new Date().toISOString()
         };
         const next = { ...uPrev, [shiftUid]: updated };
@@ -2185,7 +2375,7 @@ export const AppProvider = ({ children }) => {
   };
 
   // استرجاع / إلغاء فاتورة (Refund)
-  const refundInvoice = (invoiceId, reason = 'طلب العميل') => {
+  const refundInvoice = async (invoiceId, reason = 'طلب العميل') => {
     // الحارس داخل دالة التنفيذ لا عند الزر: المرتجع يُخرج نقداً من الدرج
     // فلا يكفي إخفاء الزر — من يستدعي الدالة من مسار آخر يجب أن يُمنع أيضاً.
     if (!checkUserPermission(currentUser, 'invoices_refund')) {
@@ -2255,12 +2445,17 @@ export const AppProvider = ({ children }) => {
         - (Number(effShift.cashOut) || 0);
 
       if (cashDeduct > drawerCash + 0.01) {
-        const proceed = window.confirm(
-          '⚠️ النقدية المتاحة في درج الكاشير (' + drawerCash.toFixed(2) + ') أقل من مبلغ الاسترجاع النقدي (' + cashDeduct.toFixed(2) + ').\n\n' +
-          'غالباً لأن العهدة النقدية سُحبت للمدير.\n\n' +
-          'إذا كان المبلغ سيُصرف من خزينة المدير، اضغط "موافق" للمتابعة — وسيظهر رصيد الدرج بالسالب حتى تُضاف عهدة جديدة.\n' +
-          'وإلا اضغط "إلغاء" وأعد فتح عهدة نقدية للكاشير أولاً.'
-        );
+        const proceed = await confirmDialog({
+          title: '⚠️ نقدية الدرج لا تكفي',
+          message:
+            'النقدية المتاحة في درج الكاشير (' + drawerCash.toFixed(2) + ') أقل من مبلغ الاسترجاع النقدي (' + cashDeduct.toFixed(2) + ').\n\n' +
+            'غالباً لأن العهدة النقدية سُحبت للمدير.\n\n' +
+            'إن كان المبلغ سيُصرف من خزينة المدير فتابِع — وسيظهر رصيد الدرج بالسالب حتى تُضاف عهدة جديدة.\n' +
+            'وإلا فألغِ العملية وأعد فتح عهدة نقدية للكاشير أولاً.',
+          confirmText: 'متابعة الاسترجاع',
+          cancelText: 'إلغاء',
+          tone: 'warning'
+        });
         if (!proceed) {
           refundingIdsRef.current.delete(invoiceId);   // أُلغيت العملية: نسمح بإعادة المحاولة
           return false;
@@ -2293,12 +2488,33 @@ export const AppProvider = ({ children }) => {
     }
 
     // 2. تعديل رصيد العميل إن كانت آجلة أو جزء منها آجل وحفظه سحابياً فوراً
+    // =====================================================================
+    //  الرصيد السالب يُعرض ولا يُقصّ — والمحلي يطابق السحابي حرفياً
+    // =====================================================================
+    //  كان المحلي يكتب `Math.max(0, balance − creditDeduct)` بينما
+    //  `adjustFields` ترسل الفرق كاملاً بلا قصّ. فعميلٌ سدّد فاتورته الآجلة
+    //  (كلّها أو بعضها) ثم استُرجعت كان يظهر على هذا الجهاز برصيد ٠ وفي
+    //  السحابة بـ ‎-١٠٠ — رقمان لعميل واحد، وأيّهما تراه يعتمد على أيّ
+    //  الجهتين قرأتَ آخراً، ثم تدهس اللقطةُ السحابيةُ المحليَّ فيتغيّر الرقم
+    //  أمام عين المحاسب بلا سبب ظاهر.
+    //  والسالب ليس خطأً يُخفى: هو **رصيد دائن للعميل** — مالٌ قبضه المتجر
+    //  عن بضاعة رجعت، يجب أن يُرى ليُصرف له أو يُخصم من فاتورته القادمة.
+    //  القصّ كان يبتلعه فيبقى المال عند المتجر بلا أثر في أي شاشة.
+    //  ولا تدوير هنا عمداً: `increment` في السحابة تجمع خاماً، فتدويرُ
+    //  المحلي وحده يصنع الاختلاف نفسه الذي جئنا نزيله.
+    // =====================================================================
+    let creditRemainingAfterRefund = null;   // للتقييد في سجل التدقيق أدناه
     if (inv.customer && !inv.customer.isDefault && creditDeduct > 0) {
+      const balanceBefore = Number(
+        (customers || []).find(c => c.id === inv.customer.id || c.name === inv.customer.name)?.balance
+      ) || 0;
+      creditRemainingAfterRefund = balanceBefore - creditDeduct;
+
       isRemoteUpdateRef.current['customers'] = true;
       setCustomers(prev => {
-        const updated = (prev || []).map(c => 
+        const updated = (prev || []).map(c =>
           (c.id === inv.customer.id || c.name === inv.customer.name)
-            ? { ...c, balance: Math.max(0, (Number(c.balance) || 0) - creditDeduct) } 
+            ? { ...c, balance: (Number(c.balance) || 0) - creditDeduct }
             : c
         );
         try { localStorage.setItem('naif_pos_v3_customers', JSON.stringify(updated)); } catch (e) {}
@@ -2307,7 +2523,7 @@ export const AppProvider = ({ children }) => {
       // إنقاص الدين بالفرق حتى لا تُلغى حركة أخرى تمّت على جهاز آخر
       syncEngine.adjustFields('customers', inv.customer.id, { balance: -creditDeduct }, {}, true);
 
-      setSelectedCustomer(prev => (prev && (prev.id === inv.customer.id || prev.name === inv.customer.name) ? { ...prev, balance: Math.max(0, (Number(prev.balance) || 0) - creditDeduct) } : prev));
+      setSelectedCustomer(prev => (prev && (prev.id === inv.customer.id || prev.name === inv.customer.name) ? { ...prev, balance: (Number(prev.balance) || 0) - creditDeduct } : prev));
     }
 
     // 3. تعديل حالة الفاتورة وتوثيق معرف الوردية المسترجعة فيها وحفظها فوراً
@@ -2397,19 +2613,22 @@ export const AppProvider = ({ children }) => {
           }
         });
 
+        // الطرح العائم أسوأ من الجمع هنا: إرجاع كامل مبيعات الوردية كان
+        // يترك 7.1e-15 بدل صفر، فتبقى الوردية «بها مبيعات» بعد إرجاع كل
+        // فواتيرها ويظهر فارق في تقرير الإغلاق. لذا يُدوَّر كل عدّاد فوراً.
         return {
           ...s,
-          cashSales: Math.max(0, (s.cashSales || 0) - cashDeduct),
-          cardSales: Math.max(0, (s.cardSales || 0) - cardDeduct),
-          creditSales: Math.max(0, (s.creditSales || 0) - creditDeduct),
-          transferSales: Math.max(0, (s.transferSales || 0) - transferDeduct),
-          bankSales: Math.max(0, (s.bankSales || 0) - transferDeduct),
-          tamaraSales: Math.max(0, (s.tamaraSales || 0) - tamaraDeduct),
-          ninjaSales: Math.max(0, (s.ninjaSales || 0) - ninjaDeduct),
-          visaSales: Math.max(0, (s.visaSales || 0) - visaDeduct),
-          totalSales: Math.max(0, (s.totalSales || 0) - refundTotal),
-          cashRefunds: (s.cashRefunds || 0) + cashDeduct,
-          totalRefunds: (s.totalRefunds || 0) + refundTotal,
+          cashSales: Math.max(0, roundMoney((s.cashSales || 0) - cashDeduct)),
+          cardSales: Math.max(0, roundMoney((s.cardSales || 0) - cardDeduct)),
+          creditSales: Math.max(0, roundMoney((s.creditSales || 0) - creditDeduct)),
+          transferSales: Math.max(0, roundMoney((s.transferSales || 0) - transferDeduct)),
+          bankSales: Math.max(0, roundMoney((s.bankSales || 0) - transferDeduct)),
+          tamaraSales: Math.max(0, roundMoney((s.tamaraSales || 0) - tamaraDeduct)),
+          ninjaSales: Math.max(0, roundMoney((s.ninjaSales || 0) - ninjaDeduct)),
+          visaSales: Math.max(0, roundMoney((s.visaSales || 0) - visaDeduct)),
+          totalSales: Math.max(0, roundMoney((s.totalSales || 0) - refundTotal)),
+          cashRefunds: roundMoney((s.cashRefunds || 0) + cashDeduct),
+          totalRefunds: roundMoney((s.totalRefunds || 0) + refundTotal),
           paymentMethodsBreakdown: currentBreakdown
         };
       };
@@ -2474,6 +2693,13 @@ export const AppProvider = ({ children }) => {
         ` — خُصم من وردية: ${targetShift.cashierName || targetShift.userName || shiftUid}` +
         (chargedToOtherUser
           ? ' ⚠️ وردية البائع مغلقة، فخُصم المرتجع من وردية المنفّذ لا من وردية من باع'
+          : '') +
+        // ذمّة العميل صارت دائنة: الفاتورة الآجلة كانت مسدّدة (كلّها أو
+        // بعضها) فالمال عند المتجر والبضاعة رجعت. هذا لا يظهر في أي حركة
+        // درج — المرتجع الآجل لا يُخرج نقداً — فلو لم يُقيَّد هنا لبقي
+        // المبلغ مستحقاً للعميل بلا أثر في أي سجل.
+        (creditRemainingAfterRefund !== null && creditRemainingAfterRefund < 0
+          ? ` ⚠️ رصيد العميل صار دائناً ${Math.abs(roundMoney(creditRemainingAfterRefund)).toFixed(2)} — مبلغٌ سُدّد فعلاً ويجب ردّه للعميل أو خصمه من فاتورته القادمة`
           : ''),
       amount: inv.total,
       severity: 'high'
@@ -2591,6 +2817,17 @@ export const AppProvider = ({ children }) => {
         // المطلقة القادمة من النموذج، وإلا ارتدّت الشاشة للقيمة القديمة.
         stock: (Number(p.stock) || 0) + stockDelta,
         minStock: Number(updatedData.minStock ?? p.minStock) || 0,
+        // =================================================================
+        //  ختم الوقت إلزامي وإلا ضاع التعديل نصفَ ضياع
+        // =================================================================
+        //  حارس §5.4 في المحرّك يرفض كتابة نسخة ختمها أقدم من ختم السحابة،
+        //  ويرفضها **صامتاً**. وكان هذا التعديل يُبقي `updatedAt` القديم
+        //  الموروث من النسخة السابقة، فإن وصل الصنف تعديلٌ من جهاز آخر
+        //  بعده صار ختمنا أقدم ⇒ تُهمَل الكتابة الكاملة (الاسم والسعر
+        //  والحدّ الأدنى) بلا أي رسالة، **بينما فرق الكمية كان قد أُرسل
+        //  فعلاً عبر increment قبلها**. فيرى المستخدم الكمية تغيّرت والسعر
+        //  لم يتغيّر، ولا شيء يقول له لماذا.
+        updatedAt: new Date().toISOString(),
       } : p);
       saveAndSync('products', updated, true);
       return updated;
@@ -2704,11 +2941,14 @@ export const AppProvider = ({ children }) => {
     });
 
     // 2. خصم الكمية التالفة فورياً من مخزون المنتج
+    //  بلا `Math.max(0, …)` كما في البيع: الفرق المُرسَل للسحابة غير مقصوص،
+    //  فقصُّ المحلي وحده يجعل الشاشة والسحابة تحملان رقمين مختلفين، ثم يُبنى
+    //  فرق الجرد القادم على الرقم المقصوص فيثبُت العجز في السحابة بلا أثر.
     syncEngine.adjustStock([{ id: productId, delta: -quantity }]);
     setProducts(prev => {
       const updated = (prev || []).map(p => p.id === productId ? {
         ...p,
-        stock: Math.max(0, (Number(p.stock) || 0) - quantity),
+        stock: (Number(p.stock) || 0) - quantity,
         updatedAt: new Date().toISOString()
       } : p);
       saveAndSync('products', updated, true);
@@ -2932,7 +3172,20 @@ export const AppProvider = ({ children }) => {
     const custName = custObj?.name || 'عميل';
     const custPhone = custObj?.phone || '';
     const previousBalance = Number(custObj?.balance) || 0;
-    const remainingBalance = Math.max(0, previousBalance - numAmount);
+    // =====================================================================
+    //  الزيادة في السداد كانت تُبتلع
+    // =====================================================================
+    //  `Math.max(0, …)` كان يقصّ الرصيد عند الصفر: عميلٌ دينه ١٠٠ يدفع ١٥٠
+    //  يدخل الدرج ١٥٠ ويُخصم من ذمّته ١٠٠ فقط، والخمسون الباقية بلا أثر في
+    //  أي سجل — لا رصيد دائن ولا التزام على المتجر. أي أن مالاً استلمه
+    //  الكاشير بيده يختفي من الدفاتر، ولا يظهر عند الإقفال إلا كزيادة في
+    //  الدرج لا يعرف أحد سببها. الآن يُسمح للرصيد بالنزول تحت الصفر،
+    //  والسالب معناه **دائن للعميل**: مبلغٌ للمتجر عليه يُردّ له أو يُخصم من
+    //  فاتورته القادمة — نفس الدلالة المعتمدة في مرتجع الفاتورة الآجلة.
+    const remainingBalance = previousBalance - numAmount;
+    // الجزء الذي تجاوز الدين في هذه الدفعة وحدها — يُقيَّد في السند وفي سجل
+    // التدقيق كي يُلاحَق، لا ليُكتشف صدفةً من رصيدٍ سالب بعد أشهر.
+    const overpaidAmount = Math.max(0, numAmount - Math.max(0, previousBalance));
 
     const receiptDate = new Date().toISOString();
     const receiptNumber = `REC-${Date.now().toString().slice(-6)}`;
@@ -3033,7 +3286,10 @@ export const AppProvider = ({ children }) => {
     // شرط إضافي مهم: لا نعتبر الفواتير مسددة إلا إذا كان على العميل رصيد فعلي
     // وغطّاه المبلغ المدفوع. بدون هذا الشرط، عميل رصيده صفر (أو ضاع رصيده لأي سبب)
     // يدفع ١٠ ريال فتُختم كل فواتيره الآجلة "مسددة بالكامل" ويضيع الدين نهائياً.
-    if (remainingBalance === 0 && previousBalance > 0 && numAmount >= previousBalance) {
+    // `<= 0` لا `=== 0`: بعد السماح بالرصيد الدائن صار من يدفع أكثر من دينه
+    // ينتهي برصيد سالب، فاشتراط الصفر بالضبط كان سيترك فواتيره الآجلة مفتوحة
+    // بعد أن سدّدها كاملةً وزيادة — أي يُطالَب بدينٍ دفعه.
+    if (remainingBalance <= 0 && previousBalance > 0 && numAmount >= previousBalance) {
       updatedInvoices = updatedInvoices.map(inv => {
         if ((inv.customer?.id === customerId || inv.customerId === customerId) && inv.status !== 'refunded') {
           const cDue = (inv.paymentMethod === 'credit' || inv.paymentMethodType === 'credit')
@@ -3065,7 +3321,12 @@ export const AppProvider = ({ children }) => {
     saveAndSync('invoices', updatedInvoices, true);
 
     // 2. تحديث رصيد العميل — بالفرق (المبلغ المسدَّد) لا بقيمة نهائية محسوبة محلياً
-    const paidDelta = -(Math.max(0, previousBalance - remainingBalance));
+    // الفرق هو المبلغ المدفوع كاملاً لا الجزء الذي غطّى الدين وحده: القصّ عند
+    // الصفر كان يجعل المحليَّ (المقصوص) والسحابيَّ (`increment` بالفرق) يفترقان
+    // عند أي زيادة سداد، فتصحّح اللقطةُ القادمة الرقمَ أمام المحاسب بلا سبب
+    // ظاهر. ولا تدوير هنا: `increment` تجمع في السحابة خاماً، فتدوير الطرف
+    // المحلي وحده يُعيد الاختلاف نفسه من باب آخر.
+    const paidDelta = -numAmount;
     isRemoteUpdateRef.current['customers'] = true;
     setCustomers(prev => {
       const updated = (prev || []).map(c => 
@@ -3089,7 +3350,8 @@ export const AppProvider = ({ children }) => {
       customerPhone: custPhone,
       amount: numAmount,
       previousBalance,
-      remainingBalance,
+      remainingBalance, // قد يكون سالباً = دائن للعميل (سُدّد أكثر من دينه)
+      overpaidAmount,   // ما تجاوز الدين في هذه الدفعة — التزامٌ على المتجر لا إيراد
       method: finalMethod,
       methodName: resolvedMethod?.name || (finalMethod === 'cash' ? 'نقداً' : finalMethod === 'card' ? 'شبكة مدى / فيزا' : 'تحويل بنكي'),
       notes: actualNotes,
@@ -3105,6 +3367,21 @@ export const AppProvider = ({ children }) => {
       saveAndSync('receipts', updated, true);
       return updated;
     });
+
+    // زيادة السداد تُقيَّد صراحةً: المال دخل المتجر فعلاً ولا يقابله دين، فلولا
+    // هذا القيد لبقي رصيدٌ سالب في بطاقة العميل بلا أحد يعرف متى نشأ ولا لماذا.
+    if (overpaidAmount > 0) {
+      logAudit({
+        action: 'زيادة في سداد عميل',
+        target: custName,
+        details:
+          `سند #${receiptNumber} — المدفوع ${numAmount.toFixed(2)} والدين قبل السداد ${previousBalance.toFixed(2)}` +
+          ` — الزيادة ${overpaidAmount.toFixed(2)} (${finalMethod === 'cash' ? 'نقداً — دخلت الدرج' : finalMethod === 'card' ? 'شبكة' : 'تحويل'})` +
+          ` ⚠️ رصيد العميل صار دائناً ${Math.abs(remainingBalance).toFixed(2)} — مبلغٌ للمتجر عليه يُردّ أو يُخصم من فاتورته القادمة`,
+        severity: 'high',
+        amount: overpaidAmount
+      });
+    }
 
     // 4. الدفع نقداً (تضاف لدرج الوردية إذا كانت مفتوحة، أو لخزينة الإدارة كاش المدير إن لم تكن هناك وردية)
     if (finalMethod === 'cash') {
@@ -3124,7 +3401,7 @@ export const AppProvider = ({ children }) => {
           user: currentUserName
         };
 
-        const newCashIn = (activeShift.cashIn || 0) + numAmount;
+        const newCashIn = roundMoney((activeShift.cashIn || 0) + numAmount);
         const nextActive = {
           ...activeShift,
           cashIn: newCashIn
@@ -3188,32 +3465,23 @@ export const AppProvider = ({ children }) => {
       });
     }
 
-    // 5. الدفع شبكة مدى / فيزا (تضاف لمبيعات نقاط البيع POS لتسويتها مع البنك)
+    // 5. الدفع شبكة مدى / فيزا — تحصيلُ دينٍ لا بيعةٌ جديدة
     else if (finalMethod === 'card') {
-      if (activeShift?.isOpen) {
-        const nextCardSales = (activeShift.cardSales || 0) + numAmount;
-        const nextActive = {
-          ...activeShift,
-          cardSales: nextCardSales
-        };
-        setActiveShift(nextActive);
-        saveAndSync('active_shift', nextActive, true);
-
-        setUserShifts(prev => {
-          const cur = prev[currentUserId] || activeShift;
-          const updated = {
-            ...prev,
-            [currentUserId]: {
-              ...cur,
-              cardSales: nextCardSales,
-              updatedAt: new Date().toISOString()
-            }
-          };
-          saveAndSync('user_shifts', updated, true);
-          return updated;
-        });
-      }
-
+      // ===================================================================
+      //  تحصيل الدين لا يُزاد على عدّادات المبيعات
+      // ===================================================================
+      //  كان يُضاف هنا إلى `cardSales` في الوردية وفي `user_shifts` معاً.
+      //  والفاتورة الآجلة سُجّلت مبيعاً **يوم صدورها** (`creditSales`)، فصار
+      //  دينٌ قيمته ١٠٠ يُنتج ١٠٠ مبيعات آجلة يوم البيع + ١٠٠ مبيعات شبكة يوم
+      //  التحصيل = ٢٠٠ مبيعات لبيعةٍ واحدة. وتقارير المبيعات والضريبة تتضخّم
+      //  بمبلغ كل دينٍ يُحصَّل، أي أن المتجر يُقرّ ضريبةً عن إيرادٍ لم يوجد.
+      //  التحصيل تحويلُ ذمّةٍ إلى مال، لا إيرادٌ جديد.
+      //  ولا يمسّ الدرج أيضاً: المال يذهب لحساب البنك لا ليد الكاشير، فلا
+      //  حركة درج ولا `cashIn` — وإلا طُولب الكاشير عند الإقفال بمالٍ لم يستلمه.
+      //  أثره المقيَّد كلّه: إسقاط رصيد العميل أعلاه، وسند القبض في
+      //  `paymentReceipts`، ومجموعه في لقطة الوردية المغلقة
+      //  (`customerPaymentsCard` في `closeShift`).
+      // ===================================================================
       broadcastStoreActivity({
         type: 'customer_payment',
         title: 'سند قبض شبكة 💳',
@@ -3382,6 +3650,17 @@ export const AppProvider = ({ children }) => {
     });
 
     // الكمية بالفرق، وسعر التكلفة قيمة مطلقة تُكتب مع نفس العملية
+    // ===================================================================
+    //  المعامل الخامس `keepWritten = true` ليس تفصيلاً شكلياً
+    // ===================================================================
+    //  بدونه يُسقط المحرّك الصنفَ من ذاكرة الفروق
+    //  (`this.written['products'].delete(id)`)، فيصير المستند في نظره
+    //  «غير مرئي في لقطة سابقة» — أي **جديداً**. وأي كتابة كاملة لجدول
+    //  المنتجات قبل وصول اللقطة التالية (تعديل اسم صنف، إضافة صنف، حفظ
+    //  من شاشة المخزون) تكتب عندئذٍ كميته **مطلقة** من ذاكرة هذا الجهاز
+    //  بدل أن تُجرَّد (§5.1) — فتدهس بيعاً تمّ على جهاز آخر في نفس اللحظة.
+    //  كل نداءات adjustFields/adjustStock في المشروع تمرّره، وهذا وحده
+    //  كان ينقصه.
     purchaseDeltas.forEach(d => {
       const item = (items || []).find(i => (i.product?.id || i.id) === d.id);
       const newCost = Number(item?.costPrice) || 0;
@@ -3389,7 +3668,8 @@ export const AppProvider = ({ children }) => {
         'products',
         d.id,
         { stock: d.delta },
-        newCost > 0 ? { costPrice: newCost } : {}
+        newCost > 0 ? { costPrice: newCost } : {},
+        true
       );
     });
 
@@ -3443,7 +3723,7 @@ export const AppProvider = ({ children }) => {
       setActiveShift(prev => {
         const updated = {
           ...prev,
-          cashOut: (prev.cashOut || 0) + numPaid
+          cashOut: roundMoney((prev.cashOut || 0) + numPaid)
         };
         saveAndSync('active_shift', updated, true);
         return updated;
@@ -3455,7 +3735,7 @@ export const AppProvider = ({ children }) => {
           ...prev,
           [currentUserId]: {
             ...cur,
-            cashOut: (cur.cashOut || 0) + numPaid,
+            cashOut: roundMoney((cur.cashOut || 0) + numPaid),
             updatedAt: new Date().toISOString()
           }
         };
@@ -3495,11 +3775,15 @@ export const AppProvider = ({ children }) => {
         .filter(d => d.id && d.delta);
 
       isRemoteUpdateRef.current['products'] = true;
+      //  بلا قصّ عند الصفر (نفس قرار البيع والتالف): حذف فاتورة شراء بضاعتُها
+      //  بيعت فعلاً يُنزل الرصيد تحت الصفر، وهذه هي الحقيقة — أما قصُّ المحلي
+      //  وحده فيخالف الفرق غير المقصوص المرسَل للسحابة، ويخفي أن الفاتورة
+      //  المحذوفة كانت مصدر بضاعة خرجت من المتجر فعلاً.
       setProducts(prev => {
         const updated = (prev || []).map(prod => {
           const d = deleteDeltas.find(x => x.id === prod.id);
           if (!d) return prod;
-          return { ...prod, stock: Math.max(0, (Number(prod.stock) || 0) + d.delta) };
+          return { ...prod, stock: (Number(prod.stock) || 0) + d.delta };
         });
         try { localStorage.setItem('naif_pos_v3_products', JSON.stringify(updated)); } catch (e) {}
         return updated;
@@ -3529,7 +3813,7 @@ export const AppProvider = ({ children }) => {
     if (pur.paymentMethod === 'cash' && paidBack > 0 && activeShift?.isOpen) {
       const uid = currentUser?.id || 'admin';
       setActiveShift(prev => {
-        const updated = { ...prev, cashOut: Math.max(0, (Number(prev.cashOut) || 0) - paidBack) };
+        const updated = { ...prev, cashOut: Math.max(0, roundMoney((Number(prev.cashOut) || 0) - paidBack)) };
         saveAndSync('active_shift', updated, true);
         return updated;
       });
@@ -3537,7 +3821,7 @@ export const AppProvider = ({ children }) => {
         const cur = prev[uid] || activeShift;
         const updated = {
           ...prev,
-          [uid]: { ...cur, cashOut: Math.max(0, (Number(cur.cashOut) || 0) - paidBack), updatedAt: new Date().toISOString() }
+          [uid]: { ...cur, cashOut: Math.max(0, roundMoney((Number(cur.cashOut) || 0) - paidBack)), updatedAt: new Date().toISOString() }
         };
         saveAndSync('user_shifts', updated, true);
         return updated;
@@ -3619,7 +3903,7 @@ export const AppProvider = ({ children }) => {
           user: currentUserName
         };
 
-        const newCashOut = (activeShift.cashOut || 0) + numAmount;
+        const newCashOut = roundMoney((activeShift.cashOut || 0) + numAmount);
         const nextActive = {
           ...activeShift,
           cashOut: newCashOut
@@ -3829,7 +4113,7 @@ export const AppProvider = ({ children }) => {
       const baseShift = myExpenseShift || activeShift;
       const nextMyShift = {
         ...baseShift,
-        cashOut: (Number(baseShift?.cashOut) || 0) + numAmount,
+        cashOut: roundMoney((Number(baseShift?.cashOut) || 0) + numAmount),
         updatedAt: nowIso
       };
       const nextShifts = { ...(userShifts || {}), [currentUserId]: nextMyShift };
@@ -3950,8 +4234,8 @@ export const AppProvider = ({ children }) => {
       // عكس الأثر على درج صاحب السند
       const revertedShift = {
         ...ownerShift,
-        cashOut: exp.isIncome ? ownerShift.cashOut : Math.max(0, (Number(ownerShift.cashOut) || 0) - (Number(exp.amount) || 0)),
-        cashIn: exp.isIncome ? Math.max(0, (Number(ownerShift.cashIn) || 0) - (Number(exp.amount) || 0)) : ownerShift.cashIn,
+        cashOut: exp.isIncome ? ownerShift.cashOut : Math.max(0, roundMoney((Number(ownerShift.cashOut) || 0) - (Number(exp.amount) || 0))),
+        cashIn: exp.isIncome ? Math.max(0, roundMoney((Number(ownerShift.cashIn) || 0) - (Number(exp.amount) || 0))) : ownerShift.cashIn,
         updatedAt: new Date().toISOString()
       };
       const nextShifts = { ...(userShifts || {}), [ownerUid]: revertedShift };
@@ -4026,8 +4310,8 @@ export const AppProvider = ({ children }) => {
 
     if (activeShift?.isOpen) {
       const isDeduct = actualType === 'out' || actualType === 'treasury_drop';
-      const newCashIn = actualType === 'in' ? (activeShift.cashIn || 0) + numAmount : (activeShift.cashIn || 0);
-      const newCashOut = isDeduct ? (activeShift.cashOut || 0) + numAmount : (activeShift.cashOut || 0);
+      const newCashIn = actualType === 'in' ? roundMoney((activeShift.cashIn || 0) + numAmount) : (activeShift.cashIn || 0);
+      const newCashOut = isDeduct ? roundMoney((activeShift.cashOut || 0) + numAmount) : (activeShift.cashOut || 0);
 
       const nextActive = {
         ...activeShift,
@@ -4261,27 +4545,20 @@ export const AppProvider = ({ children }) => {
     const totalCashPurchases = shiftPurchases.reduce((s, p) => s + (Number(p.paidAmount ?? p.totalAmount ?? p.total ?? p.amount) || 0), 0);
 
     // المبالغ النقدية المرتجعة للعملاء من الدرج خلال هذه الوردية
-    const shiftCashRefunds = (invoices || []).filter(i => {
-      if (i.status !== 'refunded') return false;
-      if (i.refundShiftId && effShift.id && i.refundShiftId === effShift.id) return true;
-      if (!i.refundedAt) return false;
-      const refTime = new Date(i.refundedAt).getTime();
-      const isUserMatch = (i.refundedBy === currentUserName) || (i.refundedBy === currentUserId) || (i.refundedByUserId === currentUserId);
-      return refTime >= openTime && isUserMatch;
-    }).reduce((sum, inv) => {
+    // الفلترة بـ `isRefundChargedToShift`: المرتجع يخصّ الدرج الذي خرج منه
+    // المال لا مَن ضغط زر الاسترجاع — وإلا حُمِّل المنفّذ عجزاً لم يمرّ به
+    // (الشرح الكامل عند تعريف الدالة أعلى الملف).
+    const refundsChargedHere = (invoices || []).filter(
+      i => isRefundChargedToShift(i, effShift, currentUserId, currentUserName)
+    );
+
+    const shiftCashRefunds = refundsChargedHere.reduce((sum, inv) => {
       const b = calculateInvoicePaymentBreakdown(inv);
       return sum + (b.cash || 0);
     }, 0);
 
     // إجمالي المرتجعات بكافة وسائل الدفع للوردية
-    const shiftTotalRefunds = (invoices || []).filter(i => {
-      if (i.status !== 'refunded') return false;
-      if (i.refundShiftId && effShift.id && i.refundShiftId === effShift.id) return true;
-      if (!i.refundedAt) return false;
-      const refTime = new Date(i.refundedAt).getTime();
-      const isUserMatch = (i.refundedBy === currentUserName) || (i.refundedBy === currentUserId) || (i.refundedByUserId === currentUserId);
-      return refTime >= openTime && isUserMatch;
-    }).reduce((sum, inv) => sum + (Number(inv.total) || 0), 0);
+    const shiftTotalRefunds = refundsChargedHere.reduce((sum, inv) => sum + (Number(inv.total) || 0), 0);
 
     const finalCashSales = cashierCashSales;
     const finalCardSales = cashierCardSales;
@@ -4298,9 +4575,27 @@ export const AppProvider = ({ children }) => {
     });
     const shiftCustomerCashReceipts = shiftReceipts.reduce((s, r) => s + (Number(r.amount) || 0), 0);
 
+    // تحصيلات الديون بالشبكة خلال الوردية. تُقيَّد في اللقطة ولا تُجمَع في أي
+    // عدّاد مبيعات: هي تحصيل دينٍ سُجّل مبيعاً يوم صدور الفاتورة الآجلة، وجمعه
+    // ثانيةً يضاعف مبيعات اليوم وضريبته. ولولا هذا الحقل لاختفى من تقرير Z
+    // أثرُ مبالغ دخلت حساب بنك المتجر في هذه الوردية فعلاً.
+    const shiftCustomerCardReceipts = (paymentReceipts || []).reduce((s, r) => {
+      if (!r || r.method !== 'card' || !r.date) return s;
+      return new Date(r.date).getTime() >= openTime ? s + (Number(r.amount) || 0) : s;
+    }, 0);
+
     const startCash = Number(effShift.startCash ?? activeShift?.startCash ?? 0);
-    const expected = startCash + finalCashSales - shiftCashRefunds + shiftCashIn - shiftCashOut - totalCashExpenses - totalCashPurchases;
-    const difference = actual - expected;
+    // =====================================================================
+    //  «⚠️ الفارق: +0.00 (زيادة)» على درج مطابق تماماً
+    // =====================================================================
+    //  `expected` مجموع سبعة أرقام عائمة، وكل واحد منها ناتج جمع متتابع
+    //  لعشرات الفواتير والحركات. فدرجٌ عُدَّ نقداً وطابق القرش بالقرش كان
+    //  يُنتج `difference = -3.55e-15` — رقمٌ ليس صفراً، فيمرّ من شرط
+    //  `difference !== 0` ويُطبع في تقرير الوردية تحذيرَ اختلال، ثم يدخل
+    //  في تقييم انضباط الكاشير وفي حساب بونصه. التدوير على هللتين قبل
+    //  المقارنة يجعل «صفر» صفراً فعلاً — وهو ما رآه الكاشير في الدرج.
+    const expected = roundMoney(startCash + finalCashSales - shiftCashRefunds + shiftCashIn - shiftCashOut - totalCashExpenses - totalCashPurchases);
+    const difference = roundMoney(actual - expected);
 
     const openInfo = formatShiftDateTime(effShift.openedAt || activeShift?.openedAt);
     const closeInfo = formatShiftDateTime(closedDate);
@@ -4328,22 +4623,26 @@ export const AppProvider = ({ children }) => {
       startCash,
       openingCash: startCash,
       paymentMethodsBreakdown,
-      cashSales: finalCashSales,
-      cardSales: finalCardSales,
-      creditSales: finalCreditSales,
-      bankSales: cashierTransferSales,
-      transferSales: cashierTransferSales,
-      visaSales: cashierVisaSales,
-      tamaraSales: cashierTamaraSales,
-      ninjaSales: cashierNinjaSales,
-      customerPaymentsCash: shiftCustomerCashReceipts,
-      cashRefunds: shiftCashRefunds,
+      // لقطة الوردية المغلقة تُقرأ بعد اليوم في تقرير Z وسجل الورديات وتقييم
+      // الموظف، ولا يُعاد حسابها. فتُدوَّر أرقامها لحظة الكتابة لا لحظة العرض،
+      // وإلا بقي أثر الجمع العائم مخزَّناً في السجل التاريخي إلى الأبد.
+      cashSales: roundMoney(finalCashSales),
+      cardSales: roundMoney(finalCardSales),
+      creditSales: roundMoney(finalCreditSales),
+      bankSales: roundMoney(cashierTransferSales),
+      transferSales: roundMoney(cashierTransferSales),
+      visaSales: roundMoney(cashierVisaSales),
+      tamaraSales: roundMoney(cashierTamaraSales),
+      ninjaSales: roundMoney(cashierNinjaSales),
+      customerPaymentsCash: roundMoney(shiftCustomerCashReceipts),
+      customerPaymentsCard: roundMoney(shiftCustomerCardReceipts),
+      cashRefunds: roundMoney(shiftCashRefunds),
       expectedCash: expected,
       actualCash: actual,
       difference: difference,
-      cashIn: shiftCashIn,
-      cashOut: shiftCashOut,
-      totalSales,
+      cashIn: roundMoney(shiftCashIn),
+      cashOut: roundMoney(shiftCashOut),
+      totalSales: roundMoney(totalSales),
       totalOrders: shiftInvoices.length,
       totalDiscounts,
       taxAmount,
@@ -4461,7 +4760,7 @@ export const AppProvider = ({ children }) => {
     return { success: true, amount: Number(tx.amount) || 0 };
   };
 
-  const openNewShift = (startCash = 0) => {
+  const openNewShift = async (startCash = 0) => {
     const currentUserId = currentUser?.id || 'admin';
 
     // فحص صارم ومحكم لمنع فتح الوردية مرتين: هل لدى هذا المستخدم وردية مفتوحة بالفعل محلياً أو سحابياً؟
@@ -4495,9 +4794,21 @@ export const AppProvider = ({ children }) => {
 
       let shouldCloseAndStartNew = false;
       if (isOldDay) {
-        shouldCloseAndStartNew = window.confirm(confirmMsg);
+        shouldCloseAndStartNew = await confirmDialog({
+          title: '⚠️ وردية سابقة مفتوحة',
+          message: confirmMsg,
+          confirmText: 'إغلاق السابقة وفتح جديدة',
+          cancelText: 'استئناف السابقة',
+          tone: 'warning'
+        });
       } else {
-        const resume = window.confirm(confirmMsg);
+        const resume = await confirmDialog({
+          title: '⚠️ وردية جارية مفتوحة',
+          message: confirmMsg,
+          confirmText: 'استئناف الوردية',
+          cancelText: 'إغلاقها وفتح جديدة',
+          tone: 'warning'
+        });
         shouldCloseAndStartNew = !resume;
       }
 
@@ -4583,6 +4894,61 @@ export const AppProvider = ({ children }) => {
       });
     }
 
+    // =====================================================================
+    //  الرصيد المُرحَّل لا يبقى مُطالَباً به مرتين
+    // =====================================================================
+    //  وردية تُغلق تبقى `handoverStatus: 'pending'` بكامل نقدها بانتظار أن
+    //  يستلمه المدير. لكن الكاشير لا يسلّم شيئاً عادةً — يفتح وردية جديدة
+    //  **بنفس النقد** رصيداً افتتاحياً. فيصير على المال الواحد مُطالبتان:
+    //  واحدة في `pendingHandoversTotal` وأخرى داخل `startCash` للوردية
+    //  الجديدة، والخزينة تجمعهما (`AppContext.jsx` → `cashierTotalCash`).
+    //
+    //  وقع هذا فعلاً في المتجر: ثلاث ورديات متتابعة لكاشيرة واحدة
+    //  (٥٠ ← ٥٠ ← ١٠٠) رُحّل نقد كلٍّ منها للتالية، والنقد الحقيقي في
+    //  الدرج ٢٧٥، فعرضت الخزينة **٤٧٥** — زيادة ٢٠٠ = مجموع المُرحَّل.
+    //  والمدير يبني على هذا الرقم قرار إيداع أو تغذية درج.
+    //
+    //  الحل: النقد في مكان واحد لا مكانين. ما رُحّل يُختم `rolled_over`
+    //  فيخرج من المعلّقات، ويبقى محسوباً حيث هو فعلاً — في درج الوردية
+    //  الجديدة. وإن رُحّل بعضه فقط يبقى الباقي معلّقاً بحقّه.
+    //  ⛔ لا يسري هذا على عهدة المدير: تلك مال **جديد** دخل الدرج، ولا
+    //  علاقة لها بنقد الوردية السابقة، فلا تُسقط مطالبتها.
+    // =====================================================================
+    if (myFloats.length === 0 && effectiveStartCash > 0) {
+      const prevClosed = findLastClosedShift(shiftsHistory, currentUser);
+      const prevPending = Number(prevClosed?.handoverAmount ?? prevClosed?.actualCash ?? 0) || 0;
+      if (prevClosed && prevClosed.handoverStatus === 'pending' && prevPending > 0) {
+        const rolled = Math.min(effectiveStartCash, prevPending);
+        const remaining = roundMoney(prevPending - rolled);
+        const stamp = new Date().toISOString();
+        const nextHistory = (Array.isArray(shiftsHistory) ? shiftsHistory : []).map(s => (
+          s && s.id === prevClosed.id
+            ? {
+                ...s,
+                handoverStatus: remaining > 0.005 ? 'pending' : 'rolled_over',
+                handoverAmount: remaining,
+                rolledIntoShiftId: newShift.id,
+                rolledAmount: roundMoney(rolled),
+                rolledAt: stamp,
+                updatedAt: stamp,
+                handoverNotes: `${s.handoverNotes ? s.handoverNotes + ' · ' : ''}رُحّل ${roundMoney(rolled)} رصيداً افتتاحياً للوردية ${newShift.id}`
+              }
+            : s
+        ));
+        setShiftsHistory(nextHistory);
+        try { localStorage.setItem('naif_pos_v3_shifts_history', JSON.stringify(nextHistory)); } catch (e) {}
+        saveAndSync('shifts_history', nextHistory, true);
+
+        logAudit({
+          action: 'ترحيل نقد وردية سابقة كرصيد افتتاحي',
+          target: currentUser?.name || currentUserId,
+          details: `من الوردية ${prevClosed.id} إلى ${newShift.id}` + (remaining > 0.005 ? ` · بقي معلّقاً ${remaining}` : ''),
+          amount: roundMoney(rolled),
+          severity: 'high'
+        });
+      }
+    }
+
     activeShiftRef.current = newShift;
     setActiveShift(newShift);
     setUserShifts(prev => {
@@ -4633,7 +4999,7 @@ export const AppProvider = ({ children }) => {
   };
 
   // تعديل تقرير وردية في السجل التاريخي (مدير النظام حصراً)
-  const updateShiftRecord = (shiftId, updatedFields, reason = '') => {
+  const updateShiftRecord = async (shiftId, updatedFields, reason = '') => {
     const isManager = currentUser?.role === 'admin' || checkUserPermission(currentUser, 'drawer_delete_shifts');
     if (!isManager) {
       alert('⛔ عذراً، تعديل تقارير الورديات السابقة مقتصر حصراً على مدير النظام!');
@@ -4647,11 +5013,14 @@ export const AppProvider = ({ children }) => {
     const targetShift = (shiftsHistory || []).find(s => s.id === shiftId);
     let editReason = String(reason || '').trim();
     if (!editReason) {
-      editReason = String(window.prompt(
-        'سبب تعديل وردية مغلقة (إلزامي):\n' +
-        'سيُحفظ السبب واسمك والقيمة قبل وبعد داخل الوردية وفي سجل التدقيق.',
-        ''
-      ) || '').trim();
+      editReason = String(await promptDialog({
+        title: 'سبب تعديل وردية مغلقة (إلزامي)',
+        message: 'سيُحفظ السبب واسمك والقيمة قبل وبعد داخل الوردية وفي سجل التدقيق.',
+        placeholder: 'اكتب سبب التعديل…',
+        multiline: true,
+        required: true,
+        confirmText: 'حفظ التعديل'
+      }) || '').trim();
     }
     if (!editReason) {
       alert('⚠️ لم يُنفَّذ التعديل: سبب تعديل الوردية المغلقة إلزامي.');
@@ -4752,7 +5121,38 @@ export const AppProvider = ({ children }) => {
       return { success: false, message: 'الوردية غير موجودة' };
     }
 
-    const numReceived = Number(receivedAmount !== undefined && receivedAmount !== null ? receivedAmount : (targetShift.handoverAmount ?? targetShift.actualCash ?? 0)) || 0;
+    // =====================================================================
+    //  لا يُستلَم مالٌ رُحّل أصلاً للوردية التالية
+    // =====================================================================
+    //  الوردية المغلقة تبقى معلّقة بكامل نقدها، لكن الكاشير غالباً لا يسلّم
+    //  شيئاً — يفتح وردية جديدة بنفس النقد رصيداً افتتاحياً. فالضغط على
+    //  «استلام الكاش» هنا يُدخل الخزينةَ مبلغاً **ما زال في الدرج**، فيظهر
+    //  في الخزينة وفي درج الكاشير معاً. نفس ازدواج «٤٧٥ بدل ٢٧٥» لكن في
+    //  الاتجاه المعاكس — وهذا الأخطر لأنه يُنشئ قيداً محاسبياً لا يُلغى.
+    // =====================================================================
+    const allShiftsForHandover = [
+      ...(Array.isArray(shiftsHistory) ? shiftsHistory : []),
+      ...Object.values(userShifts || {}).filter(s => s && s.isOpen === true),
+    ];
+    const stillPending = effectivePendingHandover(targetShift, allShiftsForHandover);
+    if (stillPending <= 0.005) {
+      alert(
+        '⚠️ لا يوجد نقد معلّق على هذه الوردية.\n\n' +
+        'نقدها رُحّل رصيداً افتتاحياً للوردية التالية لنفس الكاشير، فهو محسوب هناك بالفعل.\n' +
+        'استلامه هنا يجعل نفس المبلغ في الخزينة وفي الدرج معاً.\n\n' +
+        'إن أردت استلام النقد فعلاً: أغلق الوردية الجارية أولاً ثم استلمها.'
+      );
+      return { success: false, message: 'النقد مُرحَّل ولا يوجد معلّق' };
+    }
+
+    const numReceived = Number(receivedAmount !== undefined && receivedAmount !== null ? receivedAmount : stillPending) || 0;
+    if (numReceived > stillPending + 0.005) {
+      alert(
+        `⚠️ المبلغ المُدخل (${numReceived}) أكبر من المعلّق فعلاً على هذه الوردية (${stillPending}).\n\n` +
+        'الفرق رُحّل للوردية التالية ومحسوب في درجها.'
+      );
+      return { success: false, message: 'المبلغ أكبر من المعلّق' };
+    }
     const receivedDate = new Date().toISOString();
 
     logAudit({
@@ -4832,6 +5232,175 @@ export const AppProvider = ({ children }) => {
   //    مدين  : درج الكاشير (cashIn +)
   //    دائن  : كاش خزينة المدير (قيد بمبلغ سالب) أو الحساب البنكي
   //  الشروط: صلاحية إدارة الخزينة، ووردية المستلم مفتوحة، ورصيد المصدر كافٍ.
+  // =======================================================================
+  //  سحب المدير نقدَ كاشير — نظير `fundCashierDrawer`
+  // =======================================================================
+  //  القاعدة: كل كاشير يحتفظ بنقده حتى **يسحبه المدير**. وكان السحب متاحاً
+  //  للورديات **المغلقة** وحدها (`confirmShiftCashHandover`)، فالكاشير الذي
+  //  ورديته مفتوحة لا سبيل لسحب نقده إلا بإغلاقها. وبعد إصلاح ازدواج
+  //  الترحيل صارت الشاشة تقول «العهد مستلمة بالكامل» بينما الكاشير يحمل
+  //  مئات الريالات فعلاً — لأن كل ورديّاته المغلقة رُحّلت لمفتوحته.
+  //  هذه الدالة تسحب من حيث المال فعلاً: درج الوردية المفتوحة أولاً
+  //  (بحركة `treasury_drop` تخصم من نقده)، ثم ما بقي معلّقاً من مغلقاته.
+  //  ولا تمسّ كاشيراً آخر إطلاقاً — كل مبلغ باسم صاحبه.
+  // =======================================================================
+  const withdrawCashierDrawer = ({ cashierUserId, amount, notes = '' }) => {
+    const isManager = currentUser?.role === 'admin'
+      || checkUserPermission(currentUser, 'treasury_manage')
+      || checkUserPermission(currentUser, 'drawer_manage');
+    if (!isManager) {
+      alert('⛔ سحب عهدة الكاشير مقتصر على مدير المتجر أو المسؤول المعتمد!');
+      return { success: false, message: 'صلاحيات غير كافية' };
+    }
+
+    const numAmount = roundMoney(Number(amount) || 0);
+    if (numAmount <= 0) {
+      alert('⚠️ أدخل مبلغاً أكبر من صفر.');
+      return { success: false, message: 'مبلغ غير صالح' };
+    }
+
+    const summary = getTreasurySummary();
+    const row = (summary?.cashierBalances || []).find(r => r.userId === cashierUserId);
+    const held = roundMoney(Number(row?.total) || 0);
+    const cashierName = row?.name
+      || (Array.isArray(users) ? users.find(u => u && u.id === cashierUserId)?.name : null)
+      || 'كاشير';
+
+    if (held <= 0.005) {
+      alert(`⚠️ لا يوجد نقد بذمة (${cashierName}) لسحبه.`);
+      return { success: false, message: 'لا نقد لدى الكاشير' };
+    }
+    if (numAmount > held + 0.005) {
+      alert(
+        `⚠️ النقد الذي بذمة (${cashierName}) هو ${formatMoney(held, storeInfo?.currency || 'ر.س')} فقط، ` +
+        `والمطلوب سحبه ${formatMoney(numAmount, storeInfo?.currency || 'ر.س')}.`
+      );
+      return { success: false, message: 'المبلغ أكبر من نقد الكاشير' };
+    }
+
+    const nowIso = new Date().toISOString();
+    const voucherNo = `WDR-${Date.now().toString().slice(-6)}`;
+    const managerName = currentUser?.name || 'مدير المتجر';
+    const managerId = currentUser?.id || 'admin';
+    const openShift = (userShifts || {})[cashierUserId];
+    const isOpen = Boolean(openShift && openShift.isOpen === true && !openShift.closedAt && openShift.status !== 'closed');
+
+    // 1. يُسحب أولاً من درج الوردية المفتوحة — هناك المال فعلاً
+    let remaining = numAmount;
+    const fromOpen = isOpen ? Math.min(remaining, Math.max(0, roundMoney(Number(row?.openCash) || 0))) : 0;
+    remaining = roundMoney(remaining - fromOpen);
+
+    const newTxs = [];
+    if (fromOpen > 0.005) {
+      newTxs.push({
+        id: `dtx-wdr-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        shiftId: openShift.id || null,
+        userId: cashierUserId,
+        user: cashierName,
+        type: 'treasury_drop',
+        amount: fromOpen,
+        reason: 'سحب عهدة الكاشير للخزينة',
+        notes: notes || '',
+        voucherNo,
+        date: nowIso,
+        updatedAt: nowIso,
+        by: managerName,
+        byId: managerId
+      });
+      const nextShift = {
+        ...openShift,
+        cashOut: roundMoney((Number(openShift.cashOut) || 0) + fromOpen),
+        updatedAt: nowIso
+      };
+      const nextShifts = { ...(userShifts || {}), [cashierUserId]: nextShift };
+      setUserShifts(nextShifts);
+      try { localStorage.setItem('naif_pos_v3_user_shifts', JSON.stringify(nextShifts)); } catch (e) {}
+      saveAndSync('user_shifts', nextShifts, true);
+      if ((currentUser?.id || 'admin') === cashierUserId) {
+        activeShiftRef.current = nextShift;
+        setActiveShift(nextShift);
+        try { localStorage.setItem('naif_pos_v3_active_shift', JSON.stringify(nextShift)); } catch (e) {}
+      }
+    }
+
+    // 2. الباقي يُسوّى من الورديات المغلقة المعلّقة لنفس الكاشير — الأقدم أولاً
+    const settled = [];
+    if (remaining > 0.005) {
+      const allForUser = [
+        ...(Array.isArray(shiftsHistory) ? shiftsHistory : []),
+        ...Object.values(userShifts || {}).filter(s => s && s.isOpen === true),
+      ];
+      const nextHistory = (Array.isArray(shiftsHistory) ? shiftsHistory : []).map(s => {
+        if (remaining <= 0.005) return s;
+        if (!s || (s.userId || s.cashierId) !== cashierUserId) return s;
+        const pend = effectivePendingHandover(s, allForUser);
+        if (pend <= 0.005) return s;
+        const take = Math.min(remaining, pend);
+        remaining = roundMoney(remaining - take);
+        const left = roundMoney(pend - take);
+        settled.push({ id: s.id, take });
+        return {
+          ...s,
+          handoverAmount: left,
+          handoverStatus: left > 0.005 ? 'pending' : 'received',
+          handoverReceivedBy: left > 0.005 ? s.handoverReceivedBy : managerName,
+          handoverReceivedById: left > 0.005 ? s.handoverReceivedById : managerId,
+          handoverReceivedAt: left > 0.005 ? s.handoverReceivedAt : nowIso,
+          handoverNotes: `${s.handoverNotes ? s.handoverNotes + ' · ' : ''}سُحب ${take} بسند ${voucherNo}`,
+          updatedAt: nowIso
+        };
+      });
+      setShiftsHistory(nextHistory);
+      try { localStorage.setItem('naif_pos_v3_shifts_history', JSON.stringify(nextHistory)); } catch (e) {}
+      saveAndSync('shifts_history', nextHistory, true);
+    }
+
+    if (newTxs.length > 0) {
+      const updatedTxList = [...newTxs, ...(drawerTransactions || [])];
+      setDrawerTransactions(updatedTxList);
+      try { localStorage.setItem('naif_pos_v3_drawer_tx', JSON.stringify(updatedTxList)); } catch (e) {}
+      saveAndSync('drawer_tx', updatedTxList, true);
+    }
+
+    // 3. الطرف المدين في دفتر الخزينة: المال دخل خزينة المدير
+    const entry = {
+      id: `tled-wdr-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      type: 'treasury_drop',
+      title: `سحب عهدة الكاشير (${cashierName}) إلى الخزينة`,
+      amount: numAmount,
+      cashierName,
+      cashierId: cashierUserId,
+      shiftId: isOpen ? (openShift.id || null) : null,
+      fromOpenShift: fromOpen,
+      fromClosedShifts: roundMoney(numAmount - fromOpen),
+      voucherNo,
+      user: managerName,
+      userId: managerId,
+      date: nowIso,
+      notes: notes || `سحب ${formatMoney(numAmount, storeInfo?.currency || 'ر.س')} من عهدة (${cashierName})`
+    };
+    const nextLedger = [entry, ...(treasuryLedger || [])];
+    setTreasuryLedger(nextLedger);
+    try { localStorage.setItem('naif_pos_v3_treasury_ledger', JSON.stringify(nextLedger)); } catch (e) {}
+    saveAndSync('treasury_ledger', nextLedger, true);
+
+    logAudit({
+      action: 'سحب عهدة كاشير للخزينة',
+      target: cashierName,
+      details: `من الدرج المفتوح: ${fromOpen} · من ورديات مغلقة: ${roundMoney(numAmount - fromOpen)}` + (notes ? ' — ' + notes : ''),
+      amount: numAmount,
+      severity: 'high'
+    });
+
+    return {
+      success: true,
+      voucherNo,
+      fromOpenShift: fromOpen,
+      settledShifts: settled,
+      message: `تم سحب ${formatMoney(numAmount, storeInfo?.currency || 'ر.س')} من عهدة (${cashierName}) 🌸`
+    };
+  };
+
   const fundCashierDrawer = ({ cashierUserId, amount, source = 'manager_cash', notes = '' }) => {
     const isManager = currentUser?.role === 'admin'
       || checkUserPermission(currentUser, 'treasury_manage')
@@ -4882,7 +5451,7 @@ export const AppProvider = ({ children }) => {
     if (isTargetOpen) {
       const fundedShift = {
         ...targetShift,
-        cashIn: (Number(targetShift.cashIn) || 0) + numAmount,
+        cashIn: roundMoney((Number(targetShift.cashIn) || 0) + numAmount),
         updatedAt: nowIso
       };
       const nextShifts = { ...(userShifts || {}), [cashierUserId]: fundedShift };
@@ -5231,7 +5800,13 @@ export const AppProvider = ({ children }) => {
     return computeExpectedCash({
       startCash: shift.startCash,
       cashSales,
-      cashRefunds: calculateShiftCashRefunds(invoices, shift, uid, uname),
+      // نفس قاعدة الإقفال: المرتجع يُخصم من الدرج الذي خرج منه المال.
+      // `calculateShiftCashRefunds` المستوردة ما تزال تسقط على المنفّذ عند
+      // عدم تطابق المعرّف، فتُحمِّل درجاً عجزاً لم يمرّ به — ولو استُعملت
+      // هنا لأظهرت شاشة المدير رقماً يخالف ما يقرؤه نفس الكاشير عند إقفاله.
+      cashRefunds: (invoices || [])
+        .filter(i => isRefundChargedToShift(i, shift, uid, uname))
+        .reduce((a, i) => a + (calculateInvoicePaymentBreakdown(i).cash || 0), 0),
       cashIn: sumDrawerCashIn(shiftTx),
       cashOut: sumDrawerCashOut(shiftTx),
       cashExpenses,
@@ -5276,15 +5851,38 @@ export const AppProvider = ({ children }) => {
     const expList = Array.isArray(expenses) ? expenses : [];
     const custList = Array.isArray(customers) ? customers : [];
 
+    const activeOpenShiftsList = Object.values(userShifts || {}).filter(s => s && s.isOpen === true);
+
     // 1. عهدة الكاشير اليومية (الورديات المغلقة المعلقة + الورديات المفتوحة الجارية بالدرج)
-    const pendingShifts = history.filter(s => {
+    const pendingShiftsRaw = history.filter(s => {
       if (!s) return false;
       const isPending = s.handoverStatus === 'pending' || (!s.handoverStatus && (Number(s.actualCash ?? s.expectedCash ?? 0) > 0));
       return isPending;
     });
-    const pendingHandoversTotal = pendingShifts.reduce((sum, s) => sum + (Number(s.handoverAmount ?? s.actualCash ?? s.expectedCash ?? 0) || 0), 0);
 
-    const activeOpenShiftsList = Object.values(userShifts || {}).filter(s => s && s.isOpen === true);
+    // =====================================================================
+    //  النقد الواحد لا يُطالَب به مرتين
+    // =====================================================================
+    //  وردية تُغلق تبقى معلّقة بكامل نقدها بانتظار استلام المدير. لكن
+    //  الكاشير غالباً لا يسلّم شيئاً — يفتح وردية جديدة **بنفس النقد**
+    //  رصيداً افتتاحياً. فيصير على المال الواحد مُطالبتان: واحدة هنا
+    //  وأخرى داخل `startCash` للوردية التالية، والسطر الذي يجمعهما أدناه
+    //  يضخّم «عهدة الكاشير».
+    //  وقع فعلاً: ثلاث ورديات متتابعة (٥٠ ← ٥٠ ← ١٠٠) رُحّل نقد كلٍّ منها
+    //  للتالية، والنقد الحقيقي ٢٧٥، فعُرض **٤٧٥** — زيادة ٢٠٠ بالضبط.
+    //
+    //  `openNewShift` صار يختم المُرحَّل `rolled_over` لحظة وقوعه، لكن
+    //  الورديات المغلقة **قبل** ذلك الإصلاح ما زالت معلّقة بلا ختم. فهنا
+    //  يُستنتج الترحيل من الحقيقة نفسها: وردية تالية لنفس الكاشير فُتحت
+    //  برصيد افتتاحي بعد إغلاق السابقة ⇒ ذلك المبلغ هو نقد السابقة نفسه
+    //  انتقل معه، لا مالاً جديداً. وما زاد عن الرصيد الافتتاحي يبقى
+    //  معلّقاً بحقّه — فالترحيل الجزئي لا يُسقط الباقي.
+    // =====================================================================
+    const allUserShifts = [...history, ...activeOpenShiftsList];
+    const pendingShifts = pendingShiftsRaw.filter(s => isHandoverPending(s, allUserShifts));
+    const pendingHandoversTotal = roundMoney(
+      pendingShiftsRaw.reduce((sum, s) => sum + effectivePendingHandover(s, allUserShifts), 0)
+    );
     // =====================================================================
     //  نقد الورديات المفتوحة — يُعاد حسابه من السجلات لا من العدّادات
     // =====================================================================
@@ -5315,8 +5913,47 @@ export const AppProvider = ({ children }) => {
         cash: r.cash
       }));
 
-    const cashierTotalCash = pendingHandoversTotal + openShiftsCashTotal;
-    const totalActiveCashiersCount = pendingShifts.length + activeOpenShiftsList.length;
+    const cashierTotalCash = roundMoney(pendingHandoversTotal + openShiftsCashTotal);
+
+    // =====================================================================
+    //  رصيد كل كاشير على حدة — لا يتداخل حساب كاشير مع آخر
+    // =====================================================================
+    //  القاعدة التي يعمل بها المتجر: كل كاشير يحتفظ بنقده حتى يسحبه المدير.
+    //  النقد يُرحَّل **لنفس المستخدم** بين ورديّاته، ولا يُخصم إلا بسحب
+    //  المدير. فالرقم الصحيح ليس مجموعاً عائماً بل **رصيداً لكل شخص**:
+    //    نقد الوردية المفتوحة + ما بقي معلّقاً من ورديّاته المغلقة.
+    //  وبدون هذا التفصيل كان المدير يرى مجموعاً واحداً لا يعرف من يحمله،
+    //  فلا يستطيع أن يسحب من شخص بعينه ولا أن يلاحق عجزاً باسمه.
+    // =====================================================================
+    const balanceMap = new Map();
+    const bumpBalance = (uid, name, field, amount) => {
+      if (!uid || !(Math.abs(amount) > 0.005)) return;
+      const row = balanceMap.get(uid)
+        || { userId: uid, name: name || 'كاشير', openCash: 0, pendingCash: 0, total: 0 };
+      row[field] = roundMoney(row[field] + amount);
+      row.total = roundMoney(row.openCash + row.pendingCash);
+      if (name && row.name === 'كاشير') row.name = name;
+      balanceMap.set(uid, row);
+    };
+    openShiftsCash.forEach(r => bumpBalance(
+      r.shift.userId || r.shift.cashierId,
+      r.shift.cashierName || resolveUserName(r.shift, users),
+      'openCash', r.cash
+    ));
+    pendingShiftsRaw.forEach(s => bumpBalance(
+      s.userId || s.cashierId,
+      s.cashierName || resolveUserName(s, users),
+      'pendingCash', effectivePendingHandover(s, allUserShifts)
+    ));
+    const cashierBalances = Array.from(balanceMap.values())
+      .filter(r => Math.abs(r.total) > 0.005)
+      .sort((a, b) => b.total - a.total);
+
+    // «كاشير نشط» = من يحمل نقداً فعلاً أو ورديته مفتوحة — لا عدد السجلات
+    const totalActiveCashiersCount = new Set([
+      ...cashierBalances.map(r => r.userId),
+      ...activeOpenShiftsList.map(s => s.userId || s.cashierId).filter(Boolean),
+    ]).size;
 
     // 2. عهدة كاش المدير المتاحة بالخزينة (المستلم من الكاشيرات + سندات قبض الديون الموردة للخزينة - المصروفات من الخزينة - المودع كاش بالبنك)
     const totalReceivedHandovers = ledger
@@ -5522,6 +6159,7 @@ export const AppProvider = ({ children }) => {
       pendingHandoversTotal,
       openShiftsCashTotal,
       negativeDrawers,   // أدراج سالبة تحتاج متابعة المدير — لا تُخفى بالتصفير
+      cashierBalances,   // رصيد كل كاشير باسمه — لا يتداخل حساب كاشير مع آخر
       cashierTotalCash,
       totalActiveCashiersCount,
       activeOpenShiftsList,
@@ -7044,6 +7682,7 @@ export const AppProvider = ({ children }) => {
       treasuryLedger,
       confirmShiftCashHandover,
       fundCashierDrawer,
+      withdrawCashierDrawer,
       cancelPendingFloat,
       getPendingFloatsFor,
       getPendingFloatTotalFor,
@@ -7124,9 +7763,14 @@ export const AppProvider = ({ children }) => {
       deleteSpoilageRecord,
       resolveUserName,
       hashPin,
-      verifyPin
+      verifyPin,
+      confirmDialog,
+      promptDialog
     }}>
       {children}
+      {/* نوافذ التأكيد والإدخال: تُصيَّر هنا لا داخل كل شاشة، كي تعلو فوق
+          أي نافذة أخرى مفتوحة (تأكيد يُطلب من داخل نافذة الدفع مثلاً) */}
+      <AppDialogHost queue={dialogQueue} onResolve={resolveDialog} />
     </AppContext.Provider>
   );
 };

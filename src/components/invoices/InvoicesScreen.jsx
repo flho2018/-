@@ -23,7 +23,9 @@ export const InvoicesScreen = ({ setCurrentTab, setIsCartOpen }) => {
     deleteHeldBill,
     holdCurrentCart,
     cart,
-    currentUser
+    currentUser,
+    confirmDialog,
+    promptDialog
   } = useApp();
 
   // ================= الفواتير المعلقة =================
@@ -44,12 +46,18 @@ export const InvoicesScreen = ({ setCurrentTab, setIsCartOpen }) => {
     if (setIsCartOpen) setIsCartOpen(true);
   };
 
-  const handleDeleteHeldBill = (bill) => {
+  const handleDeleteHeldBill = async (bill) => {
     if (!canManageHeld) {
       alert('⛔ ليس لديك صلاحية حذف الفواتير المعلقة.\nتُمنح من: الإعدادات ← المستخدمون ← الصلاحيات ← "تعليق واسترجاع الفواتير".');
       return;
     }
-    if (window.confirm(`هل تريد حذف الفاتورة المعلقة "${bill.label || ''}" نهائياً؟`)) {
+    const ok = await confirmDialog({
+      title: 'حذف فاتورة معلقة',
+      message: `هل تريد حذف الفاتورة المعلقة «${bill.label || ''}» نهائياً؟`,
+      confirmText: 'حذف',
+      tone: 'danger'
+    });
+    if (ok) {
       deleteHeldBill(bill.id);
     }
   };
@@ -390,14 +398,28 @@ export const InvoicesScreen = ({ setCurrentTab, setIsCartOpen }) => {
   // بدونها كان الكاشير الممنوع هناك ينفّذها من هنا.
   const canSettleCredit = checkUserPermission(currentUser, 'customers_receipt_voucher');
 
-  const handleRefund = (inv) => {
+  const handleRefund = async (inv) => {
     // صلاحية المرتجع: أخطر إجراء في النظام لأنه يُخرج نقداً من الدرج
     if (!canRefund) {
       alert('⛔ ليس لديك صلاحية إصدار مرتجع.\nتُمنح من: الإعدادات ← المستخدمون ← الصلاحيات ← "إصدار مرتجع واسترجاع المبالغ".');
       return;
     }
-    if (confirm(`هل أنت متأكد من استرجاع وإلغاء الفاتورة (${inv.invoiceNumber}) وإعادة المنتجات للمخزون؟`)) {
-      const reason = prompt('سبب الاسترجاع (إلزامي):', 'طلب العميل');
+    const confirmed = await confirmDialog({
+      title: 'استرجاع فاتورة',
+      message: `هل أنت متأكد من استرجاع وإلغاء الفاتورة (${inv.invoiceNumber}) وإعادة المنتجات للمخزون؟`,
+      confirmText: 'متابعة الاسترجاع',
+      tone: 'danger'
+    });
+    if (confirmed) {
+      const reason = await promptDialog({
+        title: 'سبب الاسترجاع (إلزامي)',
+        message: `الفاتورة: ${inv.invoiceNumber}\nالمبلغ: ${formatMoney(Number(inv.total) || 0, storeInfo?.currency || 'ر.س')}`,
+        defaultValue: 'طلب العميل',
+        placeholder: 'سبب الاسترجاع…',
+        multiline: true,
+        required: true,
+        confirmText: 'تنفيذ الاسترجاع'
+      });
       if (!reason || !String(reason).trim()) {
         alert('⚠️ يجب كتابة سبب الاسترجاع.');
         return;
@@ -405,7 +427,7 @@ export const InvoicesScreen = ({ setCurrentTab, setIsCartOpen }) => {
       // مهم: refundInvoice ترجع false إذا لم تكن هناك وردية مفتوحة أو الفاتورة مرتجعة أصلاً.
       // كانت الرسالة تقول "تم بنجاح" في كل الأحوال، فيسلّم الكاشير الفلوس والبضاعة
       // بينما لم يحصل استرجاع فعلي ولا خصم من الدرج.
-      const isRefunded = refundInvoice(inv.id, reason || 'طلب العميل');
+      const isRefunded = await refundInvoice(inv.id, reason || 'طلب العميل');
       logAudit({
         action: AUDIT.INVOICE_REFUND,
         targetId: inv.id,
@@ -512,7 +534,7 @@ export const InvoicesScreen = ({ setCurrentTab, setIsCartOpen }) => {
     printHtmlDirectly(html, `سند_قبض_${receiptData.receiptNumber || 'عميل'}`, { purpose: 'invoice', storeInfo });
   };
 
-  const handleConfirmSettle = (e) => {
+  const handleConfirmSettle = async (e) => {
     if (e && e.preventDefault) e.preventDefault();
     if (!settleModalInvoice) return;
     // هذه العملية تستقبل نقداً وتُصدر سنداً — تُعامَل كسند قبض
@@ -545,7 +567,12 @@ export const InvoicesScreen = ({ setCurrentTab, setIsCartOpen }) => {
     }, currentUser);
     setSettleModalInvoice(null);
 
-    if (confirm(`✅ تم سداد مبلغ ${formatMoney(amt, storeInfo?.currency || 'ر.س')} للفاتورة #${invoice.invoiceNumber} بنجاح!\n\nهل ترغب في طباعة سند القبض للعميل الآن؟`)) {
+    if (await confirmDialog({
+      title: '✅ تم السداد',
+      message: `تم سداد مبلغ ${formatMoney(amt, storeInfo?.currency || 'ر.س')} للفاتورة #${invoice.invoiceNumber} بنجاح.\n\nهل ترغب في طباعة سند القبض للعميل الآن؟`,
+      confirmText: 'طباعة السند',
+      cancelText: 'لاحقاً'
+    })) {
       if (receiptObj) {
         handlePrintReceiptVoucher(receiptObj);
       }

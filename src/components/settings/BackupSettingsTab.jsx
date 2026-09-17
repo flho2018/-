@@ -16,6 +16,7 @@ import { syncEngine } from '../../utils/syncEngine';
 //  هي مجرد تكلفة تخزين تُطمئن صاحبها بلا سبب.
 // =========================================================================
 export const CloudBackupsPanel = ({ onRestore, restoreArmed }) => {
+  const { confirmDialog } = useApp();
   const [rows, setRows] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
   const [msg, setMsg] = React.useState(null);
@@ -35,10 +36,13 @@ export const CloudBackupsPanel = ({ onRestore, restoreArmed }) => {
       setMsg({ t: 'err', m: 'أدخل رمز المدير أعلاه أولاً — الاسترجاع يستبدل بيانات المتجر الحية.' });
       return;
     }
-    if (!window.confirm(
-      `استرجاع النسخة المؤرخة ${new Date(row.date).toLocaleString('ar-SA')}؟\n\n` +
-      `سيُستبدل كل ما في المتجر الآن بمحتوى هذه النسخة.`
-    )) return;
+    const ok = await confirmDialog({
+      title: 'استرجاع نسخة سحابية',
+      message: `استرجاع النسخة المؤرخة ${new Date(row.date).toLocaleString('ar-SA')}؟\n\nسيُستبدل كل ما في المتجر الآن بمحتوى هذه النسخة.`,
+      confirmText: 'استرجاع',
+      tone: 'danger'
+    });
+    if (!ok) return;
 
     setBusy(true); setMsg(null);
     const res = await syncEngine.getBackup(row.id);
@@ -54,7 +58,13 @@ export const CloudBackupsPanel = ({ onRestore, restoreArmed }) => {
   };
 
   const handleDelete = async (row) => {
-    if (!window.confirm(`حذف النسخة المؤرخة ${new Date(row.date).toLocaleString('ar-SA')} نهائياً؟`)) return;
+    const ok = await confirmDialog({
+      title: 'حذف نسخة سحابية',
+      message: `حذف النسخة المؤرخة ${new Date(row.date).toLocaleString('ar-SA')} نهائياً؟`,
+      confirmText: 'حذف',
+      tone: 'danger'
+    });
+    if (!ok) return;
     setBusy(true);
     const res = await syncEngine.deleteBackup(row.id);
     setBusy(false);
@@ -157,7 +167,8 @@ export const BackupSettingsTab = () => {
     pushAllToCloud,
     syncStatus,
     lastSyncTime,
-    currentUser
+    currentUser,
+    confirmDialog
   } = useApp();
 
   // رمز تأكيد الاستعادة — الاستعادة تستبدل بيانات المتجر الحية وترفعها
@@ -399,7 +410,13 @@ export const BackupSettingsTab = () => {
 
   // استعادة لقطة من السجل
   const handleRestoreSnapshot = async (bkp) => {
-    if (!confirm(`هل أنت متأكد من استعادة النسخة المؤرخة في (${formatDate(bkp.date)})؟`)) {
+    const ok = await confirmDialog({
+      title: 'استعادة نسخة محلية',
+      message: `هل أنت متأكد من استعادة النسخة المؤرخة في (${formatDate(bkp.date)})؟\n\nسيُستبدل كل ما في المتجر الآن بمحتوى هذه النسخة.`,
+      confirmText: 'استعادة',
+      tone: 'danger'
+    });
+    if (!ok) {
       return;
     }
 
