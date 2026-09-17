@@ -5007,15 +5007,20 @@ export const AppProvider = ({ children }) => {
     }
 
     // =================================================================
-    //  عهدة مُسلّمة من المدير؟ هي الرصيد الافتتاحي حتماً
+    //  العهدة المُسلّمة حدٌّ **أدنى** للرصيد الافتتاحي — لا قيمة تدهسه
     // =================================================================
-    //  المبلغ صار فعلياً في يد الكاشير أو في الدرج. لو أُضيف كـ"إيداع"
-    //  فوق ما يعدّه الكاشير لحُسب مرتين وظهر الدرج بضعف المبلغ. ولأن
-    //  الإدارة اختارت التثبيت الإجباري: الرصيد الافتتاحي = مبلغ العهدة،
-    //  وأي نقص يظهر كعجز عند إقفال الوردية.
+    //  كان: `myFloats.length > 0 ? myFloatTotal : startCash` — أي أن أي
+    //  عهدة من المدير **تُلغي** ما بذمّة الكاشير أصلاً. فكاشيرة تحمل ٢٧٥
+    //  من مبيعاتها ويسلّمها المدير ١٠٠ فكّة تفتح ورديتها بـ**١٠٠**،
+    //  فتتبخّر الـ٢٧٥ من دفتر العهدة وتظهر عجزاً عند الإقفال. وهذا يخالف
+    //  §5.8: النقد لا يُخصم إلا بسحب المدير.
+    //  الآن: العهدة **أرضية** لا سقف. لا يبدأ بأقلّ مما سلّمه المدير
+    //  (وهو مقصد التثبيت الإجباري الأصلي)، وما زاد بذمّته يُرحَّل معه.
+    //  ولا ازدواج: العهدة تُختم `consumed` + `countedInStartCash` أدناه
+    //  فلا تُجمع ثانيةً كإيداع درج.
     const myFloats = getPendingFloatsFor(currentUserId);
     const myFloatTotal = myFloats.reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
-    const effectiveStartCash = myFloats.length > 0 ? myFloatTotal : (Number(startCash) || 0);
+    const effectiveStartCash = roundMoney(Math.max(Number(startCash) || 0, myFloatTotal));
 
     const newShift = {
       id: `shift-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
@@ -5086,11 +5091,15 @@ export const AppProvider = ({ children }) => {
     //  ⛔ لا يسري هذا على عهدة المدير: تلك مال **جديد** دخل الدرج، ولا
     //  علاقة لها بنقد الوردية السابقة، فلا تُسقط مطالبتها.
     // =====================================================================
-    if (myFloats.length === 0 && effectiveStartCash > 0) {
+    // الجزء المُرحَّل = الرصيد الافتتاحي **ناقص العهدة**. العهدة مالٌ جديد
+    // دخل الدرج ولا تُسقط مطالبة الوردية السابقة؛ وما زاد عنها هو نقد
+    // الكاشير المُرحَّل. وبدون هذا الطرح كانت العهدة تُسقط معلّقاً لم يُرحَّل.
+    const carriedFromPrev = roundMoney(Math.max(0, effectiveStartCash - myFloatTotal));
+    if (carriedFromPrev > 0.005) {
       const prevClosed = findLastClosedShift(shiftsHistory, currentUser);
       const prevPending = Number(prevClosed?.handoverAmount ?? prevClosed?.actualCash ?? 0) || 0;
       if (prevClosed && prevClosed.handoverStatus === 'pending' && prevPending > 0) {
-        const rolled = Math.min(effectiveStartCash, prevPending);
+        const rolled = Math.min(carriedFromPrev, prevPending);
         const remaining = roundMoney(prevPending - rolled);
         const stamp = new Date().toISOString();
         const nextHistory = (Array.isArray(shiftsHistory) ? shiftsHistory : []).map(s => (
@@ -6123,9 +6132,9 @@ export const AppProvider = ({ children }) => {
     const bumpBalance = (uid, name, field, amount) => {
       if (!uid || !(Math.abs(amount) > 0.005)) return;
       const row = balanceMap.get(uid)
-        || { userId: uid, name: name || 'كاشير', openCash: 0, pendingCash: 0, total: 0 };
-      row[field] = roundMoney(row[field] + amount);
-      row.total = roundMoney(row.openCash + row.pendingCash);
+        || { userId: uid, name: name || 'كاشير', openCash: 0, pendingCash: 0, floatCash: 0, total: 0 };
+      row[field] = roundMoney((row[field] || 0) + amount);
+      row.total = roundMoney(row.openCash + row.pendingCash + row.floatCash);
       if (name && row.name === 'كاشير') row.name = name;
       balanceMap.set(uid, row);
     };
@@ -6139,6 +6148,25 @@ export const AppProvider = ({ children }) => {
       s.cashierName || resolveUserName(s, users),
       'pendingCash', effectivePendingHandover(s, allUserShifts)
     ));
+    // =====================================================================
+    //  العهدة المُسلّمة من المدير مالٌ بذمّة الكاشير — لا رقم معلّق بلا صاحب
+    // =====================================================================
+    //  `fundCashierDrawer` يُخرج المال من الخزينة **فوراً** (فتبقى الخزينة
+    //  مضبوطة) وينتظر باسم الكاشير كـ`drawer_funding` بحالة `pending` حتى
+    //  يفتح ورديته. لكن هذا الرصيد لم يكن يدخل `cashierBalances` إطلاقاً،
+    //  فكان يظهر في صندوق «عهد مُسلّمة» **داخل بطاقة المدير** بلا أن يُنسب
+    //  لصاحبه. فالمالك يسحب من كاشير ويُعطي كاشيراً آخر، ثم لا يجد المبلغ
+    //  في رصيد الثاني ويجده محسوباً في ناحية المدير — مخالفة للبند ٤ في §5.8.
+    //  ولا ازدواج: عند فتح الوردية يُختم السند `consumed` و`countedInStartCash`
+    //  فيخرج من المعلّقات ويصير `startCash` محسوباً في درج الوردية.
+    // =====================================================================
+    (drawerTransactions || [])
+      .filter(t => t && t.subType === 'drawer_funding' && t.status === 'pending')
+      .forEach(t => bumpBalance(
+        t.userId,
+        t.user || (users || []).find(u => u && u.id === t.userId)?.name,
+        'floatCash', Number(t.amount) || 0
+      ));
     const cashierBalances = Array.from(balanceMap.values())
       .filter(r => Math.abs(r.total) > 0.005)
       .sort((a, b) => b.total - a.total);

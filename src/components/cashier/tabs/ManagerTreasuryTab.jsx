@@ -1927,6 +1927,12 @@ export const ManagerTreasuryTab = ({ treasurySummary, isAdmin }) => {
                 <div className="mt-1 text-[10px] text-amber-800 leading-relaxed">
                   في الدرج الجاري: <strong className="font-mono">{formatMoney(withdrawTarget.openCash, storeInfo?.currency || 'ر.س')}</strong>
                   {' · '}من ورديات مغلقة: <strong className="font-mono">{formatMoney(withdrawTarget.pendingCash, storeInfo?.currency || 'ر.س')}</strong>
+                  {withdrawTarget.floatCash > 0.005 && (
+                    <>
+                      {' · '}عهدة مُسلّمة لم تُفتح بها وردية:{' '}
+                      <strong className="font-mono">{formatMoney(withdrawTarget.floatCash, storeInfo?.currency || 'ر.س')}</strong>
+                    </>
+                  )}
                 </div>
               </div>
 
