@@ -44,7 +44,9 @@ export const PosRegister = ({ isCartOpen, setIsCartOpen }) => {
     updateProduct,
     holdCurrentCart,
     confirmDialog,
-    promptDialog
+    promptDialog,
+    invoices,
+    getCashierHeldCash
   } = useApp();
 
   // ============ تعليق الفاتورة الحالية (Hold Bill) ============
@@ -273,22 +275,31 @@ export const PosRegister = ({ isCartOpen, setIsCartOpen }) => {
     return `دفع ${m?.name || 'شبكة'} (${formatMoney(totals.total, storeInfo?.currency || 'ر.س')}) 💳`;
   };
 
-  const [openingCashInput, setOpeningCashInput] = useState(() => {
-    if (lastUserClosedShift && typeof lastUserClosedShift.actualCash === 'number') {
-      return String(lastUserClosedShift.actualCash);
-    }
-    return String(storeInfo?.defaultStartCash ?? storeInfo?.fixedOpeningCash ?? '0');
-  });
+  // الرصيد المرحَّل = ما بذمّة الكاشير **الآن**، لا ما انتهت به آخر وردية
+  // مغلقة. انظر getCashierHeldCash في AppContext لسبب أن الثاني خاطئ.
+  const heldCash = React.useMemo(
+    () => (typeof getCashierHeldCash === 'function' ? getCashierHeldCash(currentUser?.id) : 0),
+    [getCashierHeldCash, currentUser?.id, shiftsHistory, userShifts, invoices, isShiftOpen]
+  );
+  const rolloverCash = heldCash > 0.005
+    ? heldCash
+    : (lastUserClosedShift && typeof lastUserClosedShift.actualCash === 'number'
+        ? lastUserClosedShift.actualCash
+        : null);
+
+  const [openingCashInput, setOpeningCashInput] = useState(() =>
+    String(storeInfo?.defaultStartCash ?? storeInfo?.fixedOpeningCash ?? '0')
+  );
 
   React.useEffect(() => {
     if (!isShiftOpen) {
-      if (lastUserClosedShift && typeof lastUserClosedShift.actualCash === 'number') {
-        setOpeningCashInput(String(lastUserClosedShift.actualCash));
-      } else {
-        setOpeningCashInput(String(storeInfo?.defaultStartCash ?? storeInfo?.fixedOpeningCash ?? '0'));
-      }
+      setOpeningCashInput(
+        rolloverCash !== null
+          ? String(rolloverCash)
+          : String(storeInfo?.defaultStartCash ?? storeInfo?.fixedOpeningCash ?? '0')
+      );
     }
-  }, [storeInfo?.defaultStartCash, storeInfo?.fixedOpeningCash, isShiftOpen, lastUserClosedShift]);
+  }, [storeInfo?.defaultStartCash, storeInfo?.fixedOpeningCash, isShiftOpen, rolloverCash]);
 
   const [isCalculatorOpen, setIsCalculatorOpen] = useState(false);
   const [isPriceModalOpen, setIsPriceModalOpen] = useState(false);
@@ -382,10 +393,11 @@ export const PosRegister = ({ isCartOpen, setIsCartOpen }) => {
     if (!product) return;
     if (!isShiftOpen) {
       setPendingProductToCart(product);
-      const defaultRollover = (lastUserClosedShift && typeof lastUserClosedShift.actualCash === 'number')
-        ? String(lastUserClosedShift.actualCash)
-        : String(storeInfo?.defaultStartCash ?? storeInfo?.fixedOpeningCash ?? '0');
-      setOpeningCashInput(defaultRollover);
+      setOpeningCashInput(
+        rolloverCash !== null
+          ? String(rolloverCash)
+          : String(storeInfo?.defaultStartCash ?? storeInfo?.fixedOpeningCash ?? '0')
+      );
       setIsOpenShiftModal(true);
       return;
     }
@@ -1933,20 +1945,20 @@ export const PosRegister = ({ isCartOpen, setIsCartOpen }) => {
                 </div>
               </div>
 
-              {/* بطاقة الترحيل التلقائي الذكي من الوردية السابقة */}
-              {lastUserClosedShift && typeof lastUserClosedShift.actualCash === 'number' && (
+              {/* الرصيد المرحَّل = ما بذمّة الكاشير الآن، لا ما انتهت به آخر وردية مغلقة */}
+              {rolloverCash !== null && (
                 <div className="p-3 bg-gradient-to-r from-emerald-50 to-teal-50 border border-emerald-200 rounded-2xl space-y-1">
                   <div className="flex items-center justify-between text-xs">
                     <span className="text-emerald-950 font-black flex items-center gap-1.5">
                       <span>🔄</span>
-                      <span>ترحيل تلقائي من ورديتك السابقة:</span>
+                      <span>النقد الذي بذمّتك الآن:</span>
                     </span>
                     <span className="font-mono font-black text-emerald-800 text-sm">
-                      {formatMoney(lastUserClosedShift.actualCash, storeInfo?.currency)}
+                      {formatMoney(rolloverCash, storeInfo?.currency)}
                     </span>
                   </div>
                   <p className="text-[10px] text-emerald-700/90 leading-tight">
-                    تم تعبئة الرصيد الافتتاحي تلقائياً بالنقدية الفعلية المتبقية معك في الدرج لضمان استمرارية العهدة التراكمية.
+                    يشمل نقد ورديتك الجارية وما لم يُسحب من ورديّاتك السابقة. يبقى بعهدتك حتى يسحبه المدير.
                   </p>
                 </div>
               )}

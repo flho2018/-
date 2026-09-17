@@ -244,43 +244,98 @@ export const AppProvider = ({ children }) => {
     return () => unsub();
   }, []);
   const [isInactivityLock, setIsInactivityLock] = useState(false);
+  // المستخدم الذي طُلب الدخول بحسابه من شاشة المستخدمين — مجرد تلميح للواجهة،
+  // والرمز السري يبقى شرطاً لا يُتجاوز (انظر `switchUser`).
+  const [pinTargetUserId, setPinTargetUserId] = useState(null);
 
   // الوردية الحالية
   
-  // دالة تنقية وتطهير سجل الورديات من أي ورديات شبحية أو أسماء قديمة وتحديثها بالاسم الفعلي للمستخدم
+  // المفاتيح القديمة التي حُذفت فعلاً من السحابة في هذه الجلسة — حارس إرسال مرة واحدة
+  const purgedLegacyShiftKeysRef = useRef(new Set());
+
+  // =========================================================================
+  //  تنقية سجل الورديات — بلا إسقاط صامت وبلا إعادة ترقيم تُضاعف النقد
+  // =========================================================================
+  //  عطلان كانا هنا، وكلاهما يمسّ نقداً حقيقياً:
+  //
+  //  (أ) **ازدواج عند إعادة الترقيم**: كانت الدالة تكتب الوردية تحت
+  //      `adminUser.id` وتُسقط المفتاح القديم من الكائن. لكن غياب مفتاح من
+  //      كائن محلي **لا يحذفه من السحابة إطلاقاً** (§5.3) — الحفظ العادي
+  //      يكتب المستند الجديد ويترك القديم مكانه. فعند أول مزامنة يعود
+  //      الاثنان معاً ⇒ وردية واحدة بمئة ريال تُحتسب **مرتين** في «نقد
+  //      الكاشيرين» (٢٠٠).
+  //      وأسوأ من ذلك أن `user-2` **ليس معرّفاً قديماً** — هو اليوم معرّف
+  //      «مدير المتجر» الحيّ في `INITIAL_USERS`. فمعاملته كاسم مستعار قديم
+  //      كانت تعني: لو صار مستخدم آخر `admin` وسبقه في القائمة، انتقل نقد
+  //      ورديات المدير إلى شخص آخر — مخالفة مباشرة للبند ٤ في §5.8
+  //      («لا يتداخل أي حساب وردية مستخدم مع وردية مستخدم آخر»).
+  //      العلاج: لا إعادة ترقيم إلا لمفتاح **لا يملكه أي مستخدم حقيقي**
+  //      (مثل `admin` أو `undefined`)، وعندها يُحذف المفتاح القديم من
+  //      السحابة **صراحةً** بـ `deleteRecord` فلا يبقى له نسخة تعود.
+  //
+  //  (ب) **إسقاط صامت**: كان الشرط `if (matchingUser && isActive !== false)`
+  //      وحده، فلا `else`. أي أن وردية موظف حُذف أو عُطِّل **تختفي من كل
+  //      الشاشات ومعها نقدها**: كاشير في درجه ٣٠٠ ريالاً يُعطَّل حسابه ⇒
+  //      المبلغ يتبخّر من «نقد الكاشيرين» ومن ملخّص الخزينة، ولا أثر لعجز
+  //      يُلاحَق. الآن تبقى الوردية تحت مفتاحها الأصلي ومعها `orphanUser`
+  //      و`orphanReason` — نقدٌ ظاهر يُطالَب به خير من نقد مفقود بلا خبر.
+  // =========================================================================
   const cleanUserShifts = (rawShifts, validUsers) => {
     if (!rawShifts || typeof rawShifts !== 'object') return {};
     const safeUsers = Array.isArray(validUsers) && validUsers.length > 0 ? validUsers : (getSaved('users', INITIAL_USERS) || INITIAL_USERS);
-    const activeUsers = safeUsers.filter(u => u && u.isActive !== false);
-    const adminUser = safeUsers.find(u => u && (u.role === 'admin' || u.id === 'user-2' || u.id === 'admin')) || safeUsers[0];
+    const adminUser = safeUsers.find(u => u && u.role === 'admin') || null;
+    const knownIds = new Set(safeUsers.filter(Boolean).map(u => u.id));
 
     const cleaned = {};
+    const put = (key, shift) => {
+      // مفتاحان يؤولان لنفس الوجهة: نُبقي الأحدث ختماً ولا نمحو أحدهما بالآخر
+      cleaned[key] = cleaned[key] ? pickNewerShift(cleaned[key], shift) : shift;
+    };
+
     Object.keys(rawShifts).forEach(k => {
       const sh = rawShifts[k];
       if (!sh) return;
+      const rawKey = k;
       let uId = sh.userId || (k !== 'undefined' && k !== 'null' ? k : null);
-      let cName = String(sh.cashierName || '').trim();
+      const cName = String(sh.cashierName || '').trim();
 
-      // معالجة ورديات المدير القديمة 'admin' أو 'ادمن' أو السجلات السابقة
-      if (uId === 'admin' || uId === 'user-2' || cName.toLowerCase() === 'admin' || cName === 'ادمن' || cName === 'الادمن' || cName === 'مدير النظام') {
-        if (adminUser) {
-          uId = adminUser.id;
-          cName = adminUser.name;
-        }
-      }
+      // إعادة ترقيم قديمة ضيّقة جداً: فقط مفتاح لا يملكه أي مستخدم حقيقي.
+      // (`user-2` مستثنى عمداً — هو معرّف المدير الحيّ لا اسم مستعار قديم.)
+      const isOrphanLegacyKey = !knownIds.has(uId)
+        && (uId === 'admin' || uId === null
+          || cName.toLowerCase() === 'admin' || cName === 'ادمن' || cName === 'الادمن' || cName === 'مدير النظام');
+      if (isOrphanLegacyKey && adminUser) uId = adminUser.id;
 
-      // البحث عن المستخدم المطابق بالمعرف أو بالاسم
-      const matchingUser = safeUsers.find(u => u && (u.id === uId || String(u.name || '').trim().toLowerCase() === cName.toLowerCase()));
+      const matchingUser = safeUsers.find(u => u && (u.id === uId || (cName && String(u.name || '').trim().toLowerCase() === cName.toLowerCase())));
 
       if (matchingUser && matchingUser.isActive !== false) {
-        // نحدث المعرف والاسم فوراً ليكون مطابقاً لأحدث اسم مسجل في قائمة المستخدمين
-        cleaned[matchingUser.id] = {
+        // إن تغيّر المفتاح فعلاً، فالمستند القديم في السحابة يجب أن يُحذف صراحةً
+        // شرط `firebaseUser`: قبل اكتمال الدخول ترفض القواعد أي حذف بـ
+        // permission-denied، فنؤجّل ولا نستهلك الحارس — تُعاد المحاولة بعد الدخول.
+        if (rawKey !== matchingUser.id && !knownIds.has(rawKey) && firebaseUser && !purgedLegacyShiftKeysRef.current.has(rawKey)) {
+          purgedLegacyShiftKeysRef.current.add(rawKey);
+          try {
+            syncEngine.deleteRecord('user_shifts', rawKey);
+            console.warn(`[Shifts] حُذف مفتاح وردية قديم "${rawKey}" بعد نقله إلى "${matchingUser.id}" — منعاً لاحتساب نفس النقد مرتين`);
+          } catch (e) { /* الحذف الصريح يُعاد في الإقلاع التالي إن فشل */ }
+        }
+        put(matchingUser.id, {
           ...sh,
           userId: matchingUser.id,
           cashierName: matchingUser.name,
           cashierRole: matchingUser.roleName || (matchingUser.role === 'admin' ? '👑 مدير النظام' : '🌸 كاشير مبيعات')
-        };
+        });
+        return;
       }
+
+      // لا مستخدم مطابق، أو حسابه معطَّل: تبقى الوردية بمفتاحها ونقدها ظاهراً
+      put(rawKey, {
+        ...sh,
+        userId: sh.userId || rawKey,
+        cashierName: cName || sh.cashierName || 'مستخدم محذوف',
+        orphanUser: true,
+        orphanReason: matchingUser ? 'حساب المستخدم معطَّل' : 'المستخدم غير موجود في قائمة المستخدمين'
+      });
     });
     return cleaned;
   };
@@ -606,6 +661,19 @@ export const AppProvider = ({ children }) => {
   // مرجع لمنع حلقات التكرار أثناء استقبال التحديثات من الأجهزة الأخرى
   const isRemoteUpdateRef = useRef({});
   const hasInitializedRef = useRef(false);
+  // =========================================================================
+  //  وقت وصول آخر لقطة سحابية لكل مفتاح — حَكَمٌ في «هل هذا السجل محذوف أم جديد؟»
+  // =========================================================================
+  //  المشكلة الحقيقية: استرجاع IndexedDB غير متزامن، فقد ينتهي **بعد** وصول
+  //  اللقطة السحابية. فمديرٌ يحذف عشر فواتير على الجهاز A ⇒ السحابة ١٥٠،
+  //  والجهاز B عنده ١٦٠ محفوظة محلياً ⇒ الاسترجاع المتأخّر يرى «١٦٠ أطول من
+  //  ١٥٠» فيُعيد العشر المحذوفة، ثم أول حفظ لاحق يرفعها للسحابة فتعود لكل
+  //  الأجهزة. ولا شيء في السجل نفسه يقول «أنا مرفوع» — المحرّك يحذف `_src`
+  //  و`_ts` قبل أن تصل البيانات للتطبيق (syncEngine.js:108).
+  //  فالدليل الوحيد المتاح: متى رأينا السحابة آخر مرة. سجلٌّ **أقدم** من تلك
+  //  اللحظة والسحابة لا تعرفه ⇒ حُذف من مكان آخر. وسجلٌّ **أحدث** منها ⇒ وُلد
+  //  عندنا ولم يُرفع بعد ⇒ يُبقى.
+  const cloudSnapshotAtRef = useRef({});
   // وقت آخر عملية بيع — لمنع الضغط المزدوج على زر تأكيد الدفع
   const lastCheckoutAtRef = useRef(0);
   // الفواتير التي بدأ استرجاعها فعلاً في هذه الجلسة — حارس فوري ضد
@@ -878,6 +946,10 @@ export const AppProvider = ({ children }) => {
         // كان يجعل أول تغيير محلي في أي قسم فارغ سحابياً يُبتلع بلا رفع، فيبدو
         // أن التعديل "ما وصل" للأجهزة الأخرى حتى تعمل تعديلاً ثانياً.
         remoteKeys.forEach(k => { isRemoteUpdateRef.current[k] = (result.data[k] !== undefined); });
+        // نختم لحظة رؤية السحابة لكل مفتاح وصل فعلاً. هذا الختم هو ما يمنع
+        // استرجاع IndexedDB المتأخّر من إحياء ما حُذف من السحابة.
+        const cloudSeenAt = Date.now();
+        remoteKeys.forEach(k => { if (result.data[k] !== undefined) cloudSnapshotAtRef.current[k] = cloudSeenAt; });
 
         if (result.data.store_info) setStoreInfo(sanitizeStoreInfo(result.data.store_info));
         if (result.data.categories) setCategories(result.data.categories);
@@ -1061,6 +1133,7 @@ export const AppProvider = ({ children }) => {
 
     const unsubRemote = syncEngine.onRemoteChange((key, remoteData) => {
       isRemoteUpdateRef.current[key] = true;
+      cloudSnapshotAtRef.current[key] = Date.now();
       if (key === 'store_info' && remoteData) setStoreInfo(sanitizeStoreInfo(remoteData));
       else if (key === 'categories' && Array.isArray(remoteData)) setCategories(remoteData);
       else if (key === 'products' && Array.isArray(remoteData)) setProducts(remoteData);
@@ -1306,7 +1379,87 @@ export const AppProvider = ({ children }) => {
             console.warn(`[Storage] أُهملت نسخة IndexedDB لـ "${key}" لأنها أقدم من آخر تصفير`);
             return;
           }
-          setter(prev => (rows.length > prev.length ? rows : prev));
+          // ===================================================================
+          //  الدمج بالمعرّف لا بالطول — «الأطول هو الأصحّ» كان يُحيي المحذوف
+          // ===================================================================
+          //  السلسلة التي كانت تقع فعلاً:
+          //    ١) المدير يحذف عشر فواتير على الجهاز A ⇒ تُحذف من Firestore.
+          //    ٢) الجهاز B يُقلع: localStorage فيه ١٦٠ فاتورة، واللقطة
+          //       السحابية تسلّم ١٥٠ (وهي المرجع، فتُكتب في الحالة).
+          //    ٣) قراءة IndexedDB **غير المتزامنة** تنتهي بعد اللقطة ومعها
+          //       ١٦٠ سجلاً ⇒ الشرط `160 > 150` صحيح ⇒ تُستبدل الحالة كلها
+          //       فترجع العشر المحذوفة.
+          //    ٤) أول `saveAndSync` لاحق (بيعة واحدة تكفي) يرفع المصفوفة
+          //       كاملة ⇒ **الفواتير المحذوفة تعود على كل الأجهزة**.
+          //  وختم التصفير فوق لا يحمي من هذا: هو يحرس التصفير الكامل وحده،
+          //  والحذف الفردي لا يكتب ختماً. و**طول المصفوفة ليس دليلاً على
+          //  صحّتها** — الأطول قد يكون ببساطة الأقدم.
+          //
+          //  القاعدة البديلة (سجلاً سجلاً):
+          //   • ما في الحالة الحالية (`prev`) بعد وصول اللقطة = مرجع، يبقى.
+          //   • سجل موجود في IndexedDB وحده يبقى **فقط** إن كان ختمه أحدث من
+          //     لحظة رؤيتنا للسحابة — أي أنه وُلد هنا ولم يُرفع بعد.
+          //   • غير ذلك: أُسقط، لأن السحابة رأت هذا المفتاح ولم يكن فيه ⇒
+          //     حُذف من جهاز آخر.
+          //   • وإن لم تصل لقطة لهذا المفتاح أصلاً (جهاز بلا إنترنت): لا دليل
+          //     حذف إطلاقاً، فنتّحد بالمعرّف ونحتفظ بالأحدث ختماً لكل سجل.
+          //  ⚠️ هذا كله **محلي**: لا نحذف من السحابة شيئاً (§5.3). غاية الأمر
+          //     ألّا نُحيي عندنا ما لم تعد السحابة تعرفه.
+          //  ونترك مهلة سماح دقيقتين تحت ختم اللقطة، لأن اللقطة تُقرأ من الخادم
+          //  قبل أن تصلنا، فسجلٌّ وُلد في تلك الفجوة لا ذنب له.
+          // ===================================================================
+          const CLOUD_GRACE_MS = 120000;
+          const idOfRow = (r) => (r && (r.id ?? r.invoiceNumber ?? r.number)) || null;
+          const stampOfRow = (r) => {
+            if (!r) return 0;
+            let best = 0;
+            for (const f of ['updatedAt', 'closedAt', 'createdAt', 'date']) {
+              const t = new Date(r[f] || 0).getTime();
+              if (Number.isFinite(t) && t > best) best = t;
+            }
+            return best;
+          };
+
+          setter(prev => {
+            const prevRows = Array.isArray(prev) ? prev : [];
+            const cloudSeenAt = Number(cloudSnapshotAtRef.current[key]) || 0;
+            const byId = new Map();
+            prevRows.forEach((r, i) => byId.set(idOfRow(r) || `__prev_${i}`, r));
+
+            let kept = 0;
+            let dropped = 0;
+            let changed = false;
+            rows.forEach((r, i) => {
+              const rid = idOfRow(r) || `__idb_${i}`;
+              if (byId.has(rid)) {
+                // موجود في الحالة: اللقطة السحابية أولى به. وبلا لقطة نأخذ الأحدث ختماً.
+                if (!cloudSeenAt && stampOfRow(r) > stampOfRow(byId.get(rid))) {
+                  byId.set(rid, r);
+                  changed = true;
+                }
+                return;
+              }
+              if (cloudSeenAt && stampOfRow(r) < cloudSeenAt - CLOUD_GRACE_MS) {
+                dropped++;
+                return; // حُذف من جهاز آخر — لا يُحيا
+              }
+              byId.set(rid, r);
+              kept++;
+              changed = true;
+            });
+
+            if (dropped > 0) {
+              console.warn(`[Storage] "${key}": أُسقط ${dropped} سجلاً من IndexedDB لأن اللقطة السحابية لم تعد تعرفها (حُذفت من جهاز آخر)`);
+            }
+            if (kept > 0) {
+              console.info(`[Storage] "${key}": استُرجع ${kept} سجلاً محلياً لم يُرفع بعد`);
+            }
+            if (!changed) return prev;
+            // الترتيب: الأحدث أولاً. السجل المحلي غير المرفوع هو الأحدث دائماً،
+            // ولو أُلحق في ذيل المصفوفة لاختفى تحت مئات السجلات القديمة —
+            // فيظنّ الكاشير أن فاتورته لم تُحفظ فيعيد إصدارها.
+            return Array.from(byId.values()).sort((a, b) => stampOfRow(b) - stampOfRow(a));
+          });
         } catch (err) {
           console.warn(`[Storage] تعذّر استرجاع "${key}" من IndexedDB:`, err?.message);
         }
@@ -4828,7 +4981,26 @@ export const AppProvider = ({ children }) => {
 
       // إغلاق الوردية السابقة وتوثيقها في السجل التاريخي قبل إنشاء الوردية الجديدة
       try {
-        closeShift(existingShift.actualCash ?? existingShift.startCash ?? 0, 'إغلاق آلي لبدء وردية جديدة', existingShift);
+        // =================================================================
+        //  الإغلاق الآلي يُغلق بالنقد المحسوب من السجلات — لا بالرصيد الافتتاحي
+        // =================================================================
+        //  كان: `existingShift.actualCash ?? existingShift.startCash ?? 0`.
+        //  ووردية **مفتوحة** لا تملك `actualCash` إطلاقاً (لم تُعدّ بعد)،
+        //  فيسقط على `startCash`. وقع فعلاً في المتجر: وردية رصيدها
+        //  الافتتاحي ١٠٠ وباعت ١٧٥ نقداً (النقد الحقيقي ٢٧٥) أُغلقت آلياً
+        //  على أنها **١٠٠** ⇒ ١٧٥ ريالاً تتبخّر من دفتر العهدة، ويُسجَّل
+        //  **عجز وهمي ١٧٥** باسم الكاشيرة يدخل تقييم انضباطها وبونصها.
+        //  والمبلغ المرحَّل للوردية التالية يصير ١٠٠ بدل ٢٧٥.
+        //  `computeOpenShiftCash` تُعيد الحساب من الفواتير والحركات
+        //  والمصروفات والمشتريات — فالمال لا يضيع ولو لم يُعدّ الدرج.
+        //  ⚠️ إغلاق بلا عدّ فعلي: يُوسَم بذلك في السبب حتى لا يُحسب
+        //  «مطابقة درج» في تقييم الموظف.
+        // =================================================================
+        closeShift(
+          computeOpenShiftCash(existingShift),
+          'إغلاق آلي لبدء وردية جديدة — بلا عدّ فعلي للدرج (النقد محسوب من السجلات)',
+          existingShift
+        );
       } catch (err) {
         console.warn('Error closing existing shift before opening new one:', err);
       }
@@ -5244,6 +5416,28 @@ export const AppProvider = ({ children }) => {
   //  (بحركة `treasury_drop` تخصم من نقده)، ثم ما بقي معلّقاً من مغلقاته.
   //  ولا تمسّ كاشيراً آخر إطلاقاً — كل مبلغ باسم صاحبه.
   // =======================================================================
+  // =======================================================================
+  //  كم يحمل هذا الكاشير **الآن** — لا بكم أُغلقت آخر ورديّة له
+  // =======================================================================
+  //  نوافذ فتح الوردية كانت تعبّئ الرصيد الافتتاحي من
+  //  `lastUserClosedShift.actualCash` — أي «بكم انتهت آخر وردية مغلقة».
+  //  وهذا سؤال خاطئ: الكاشيرة قد تكون فتحت وردية بعدها وباعت فيها نقداً.
+  //  وقع فعلاً: آخر وردية مغلقة انتهت بـ١٠٠، ثم فُتحت وردية بيع فيها ١٧٥
+  //  نقداً ⇒ بيدها **٢٧٥**، والنافذة تعرض **١٠٠**.
+  //  السؤال الصحيح: ما مجموع ما بذمّته فعلاً = نقد ورديته المفتوحة +
+  //  ما بقي معلّقاً من مغلقاته. وهو نفسه الرقم الذي تعرضه الخزينة باسمه،
+  //  فلا تقول شاشةٌ ١٠٠ وأخرى ٢٧٥ لنفس المال (§5.8).
+  // =======================================================================
+  const getCashierHeldCash = (userId) => {
+    const uid = userId || currentUser?.id || 'admin';
+    try {
+      const row = (getTreasurySummary()?.cashierBalances || []).find(c => c.userId === uid);
+      return row ? roundMoney(Number(row.total) || 0) : 0;
+    } catch (e) {
+      return 0;
+    }
+  };
+
   const withdrawCashierDrawer = ({ cashierUserId, amount, notes = '' }) => {
     const isManager = currentUser?.role === 'admin'
       || checkUserPermission(currentUser, 'treasury_manage')
@@ -6530,7 +6724,43 @@ export const AppProvider = ({ children }) => {
   // =========================================================================
   // دوال إدارة المستخدمين وصلاحيات النظام الدقيقة مع التطهير الفوري لسجل الورديات
   // =========================================================================
+  // =========================================================================
+  //  حارس مشترك لإدارة المستخدمين — الصلاحية تُفحص **داخل الدالة** لا في الشاشة
+  // =========================================================================
+  //  كانت الحماية الوحيدة إخفاء تبويب في الإعدادات. وإخفاء زرّ ليس منعاً:
+  //  `useApp().addUser({role:'admin', pin:'…'})` من طرفية المتصفّح كانت تُنشئ
+  //  مديراً جديداً، و`updateUser({id:'<أنا>', role:'admin'})` كانت ترفع كاشيراً
+  //  إلى مدير **فوراً** لأن الدالة تُسقط التعديل على `currentUser` مباشرةً.
+  //  والمحاولة المرفوضة تُقيَّد في سجل التدقيق: محاولة تصعيد صلاحية مكتومة
+  //  لا تُلاحَق، والمكتوبة تُلاحَق ولو نجحت مرة.
+  // =========================================================================
+  const guardUserAdmin = (actionLabel, targetLabel) => {
+    if (checkUserPermission(currentUser, 'settings_manage_users')) return true;
+    logAudit({
+      action: `⛔ محاولة مرفوضة: ${actionLabel}`,
+      target: targetLabel,
+      details: `المنفّذ (${currentUser?.name || 'غير معروف'} / ${currentUser?.role || '—'}) لا يملك صلاحية إدارة المستخدمين`,
+      severity: 'high'
+    });
+    alert('⛔ ليس لديك صلاحية إدارة المستخدمين.\nتُمنح من: الإعدادات ← المستخدمون ← الصلاحيات.');
+    return false;
+  };
+
   const addUser = (userData) => {
+    if (!guardUserAdmin('إضافة مستخدم', (userData?.name || '').trim() || 'مستخدم جديد')) return null;
+    // ⛔ لا يجوز أن يمنح أحدٌ دوراً أعلى من دوره: كاشير يملك صلاحية إدارة
+    //    المستخدمين (وهي ممنوحة فعلاً لكاشيرتين في هذا المتجر) كان يستطيع
+    //    إنشاء حساب `admin` ثم الدخول به — تصعيد كامل في خطوتين.
+    if (userData?.role === 'admin' && currentUser?.role !== 'admin') {
+      logAudit({
+        action: '⛔ محاولة مرفوضة: إنشاء حساب مدير',
+        target: (userData?.name || '').trim() || 'مستخدم جديد',
+        details: `المنفّذ (${currentUser?.name || 'غير معروف'}) دوره ${currentUser?.role || '—'} ولا يملك منح دور المدير`,
+        severity: 'high'
+      });
+      alert('⛔ إنشاء حساب بدور «مدير» من صلاحية المدير وحده.');
+      return null;
+    }
     // رقم افتراضي '1234' كان يُمنح صامتاً لكل من يُضاف بلا رقم. النتيجة:
     // حساب يعمل برقم يعرفه كل من قرأ الكود، ولا أحد يعلم أنه ممنوح.
     // الآن: من يُضاف بلا رقم يبقى بلا تجزئة فلا يدخل، حتى يُعيَّن رقمه
@@ -6556,10 +6786,53 @@ export const AppProvider = ({ children }) => {
       saveAndSync('users', next, true);
       return next;
     });
+    logAudit({
+      action: 'إضافة مستخدم',
+      target: newUser.name,
+      details: `الدور: ${newUser.role} • ${newUser.pinHash ? 'رقم دخول مُعيَّن' : 'بلا رقم دخول (لن يستطيع الدخول حتى يُعيَّن)'} • المعرّف: ${newUser.id}`,
+      severity: 'high'
+    });
     return newUser;
   };
 
   const updateUser = (userData) => {
+    const beforeUser = (users || []).find(u => u.id === userData?.id) || null;
+    if (!guardUserAdmin('تعديل مستخدم', beforeUser?.name || userData?.id || '—')) return false;
+
+    // =====================================================================
+    //  لا يرفع أحدٌ دور نفسه — ولا يمنح دوراً أعلى من دوره
+    // =====================================================================
+    //  الدالة تُسقط التعديل على `currentUser` مباشرةً بعد الحفظ، فتعديل
+    //  «دوري» من `cashier` إلى `admin` كان يسري **في نفس اللحظة** بلا
+    //  إعادة دخول ولا رمز: كاشير يفتح بطاقته، يغيّر الدور، ويخرج مديراً.
+    //  ونفس المنع يسري على منح الغير دور مدير من غير مدير.
+    // =====================================================================
+    const isSelf = currentUser?.id === userData?.id;
+    const roleChanged = userData?.role !== undefined && beforeUser && userData.role !== beforeUser.role;
+    const permsChanged = userData?.permissions !== undefined
+      && JSON.stringify(userData.permissions) !== JSON.stringify(beforeUser?.permissions || {});
+
+    if (isSelf && (roleChanged || permsChanged)) {
+      logAudit({
+        action: '⛔ محاولة مرفوضة: تعديل دور/صلاحيات النفس',
+        target: beforeUser?.name || userData?.id || '—',
+        details: `من ${beforeUser?.role || '—'} إلى ${userData?.role || beforeUser?.role || '—'} — يلزم أن ينفّذها مستخدم آخر`,
+        severity: 'high'
+      });
+      alert('⛔ لا يمكنك تعديل دورك أو صلاحياتك بنفسك.\nيُنفّذها مستخدم آخر يملك صلاحية إدارة المستخدمين.');
+      return false;
+    }
+    if (roleChanged && userData.role === 'admin' && currentUser?.role !== 'admin') {
+      logAudit({
+        action: '⛔ محاولة مرفوضة: ترقية مستخدم إلى مدير',
+        target: beforeUser?.name || userData?.id || '—',
+        details: `المنفّذ (${currentUser?.name || 'غير معروف'}) دوره ${currentUser?.role || '—'}`,
+        severity: 'high'
+      });
+      alert('⛔ منح دور «مدير» من صلاحية المدير وحده.');
+      return false;
+    }
+
     let updatedUsersList = [];
     const pinHashUpdate = userData.pin ? { pinHash: hashPin(userData.pin) } : {};
     const nfcHashUpdate = userData.nfcCardId ? { nfcCardHash: hashNfcCard(userData.nfcCardId) } : {};
@@ -6636,33 +6909,97 @@ export const AppProvider = ({ children }) => {
       }
       return hasChange ? updatedInvs : prev;
     });
+
+    // قيد تدقيق يذكر **ما تغيّر تحديداً** — «عُدِّل مستخدم» وحدها لا تصلح دليلاً
+    const changedFields = [];
+    if (userData.name && beforeUser && userData.name !== beforeUser.name) changedFields.push(`الاسم: ${beforeUser.name} ← ${userData.name}`);
+    if (roleChanged) changedFields.push(`الدور: ${beforeUser?.role} ← ${userData.role}`);
+    if (permsChanged) changedFields.push('الصلاحيات التفصيلية');
+    if (userData.pin) changedFields.push('رقم الدخول (تجزئة جديدة)');
+    if (userData.nfcCardId) changedFields.push('بطاقة NFC (تجزئة جديدة)');
+    if (userData.isActive !== undefined && beforeUser && userData.isActive !== beforeUser.isActive) {
+      changedFields.push(userData.isActive === false ? 'تعطيل الحساب' : 'تفعيل الحساب');
+    }
+    logAudit({
+      action: permsChanged || roleChanged ? 'تغيير صلاحيات مستخدم' : 'تعديل مستخدم',
+      target: userData.name || beforeUser?.name || userData.id || '—',
+      details: changedFields.length ? changedFields.join(' • ') : 'تعديل بيانات عامة',
+      severity: (permsChanged || roleChanged || userData.pin) ? 'high' : 'normal'
+    });
+    return true;
   };
 
   const deleteUser = (userId) => {
+    const userToDelete = users.find(u => u.id === userId);
+    if (!guardUserAdmin('حذف مستخدم', userToDelete?.name || userId || '—')) return false;
     if (users.length <= 1) {
       alert('لا يمكن حذف آخر مستخدم في النظام');
       return false;
     }
-    const userToDelete = users.find(u => u.id === userId);
     if (userToDelete?.role === 'admin' && users.filter(u => u.role === 'admin').length <= 1) {
       alert('يجب أن يبقى مدير نظام واحد على الأقل');
       return false;
     }
+    // حذف مستخدم غير مدير من غير مدير ممكن، لكن حذف **مدير** من غير مدير
+    // كان سيسمح لكاشير بإزالة الرقابة عنه ثم البقاء وحده في النظام.
+    if (userToDelete?.role === 'admin' && currentUser?.role !== 'admin') {
+      logAudit({
+        action: '⛔ محاولة مرفوضة: حذف حساب مدير',
+        target: userToDelete?.name || userId,
+        details: `المنفّذ (${currentUser?.name || 'غير معروف'}) دوره ${currentUser?.role || '—'}`,
+        severity: 'high'
+      });
+      alert('⛔ حذف حساب «مدير» من صلاحية المدير وحده.');
+      return false;
+    }
+    logAudit({
+      action: 'حذف مستخدم',
+      target: userToDelete?.name || userId,
+      details: `الدور: ${userToDelete?.role || '—'} • المعرّف: ${userId} • ⚠️ ورديات هذا المستخدم ونقدها تُزال من شاشة الورديات`,
+      severity: 'high'
+    });
     syncEngine.deleteRecord('users', userId);   // حذف صريح من السحابة
     const remainingUsers = users.filter(u => u.id !== userId);
     setUsers(remainingUsers);
     saveAndSync('users', remainingUsers, true);
 
-    // تنقية وتطهير سجل الورديات فوراً من أي وردية خاصة بهذا المستخدم لمنع الورديات الشبحية نهائياً
+    // =====================================================================
+    //  ورديات المحذوف: تُزال **الفارغة** وحدها، وما فيه نقد يبقى ليُلاحَق
+    // =====================================================================
+    //  كان الحذف يمسح كل ورديات المستخدم من الكائن المحلي بلا استثناء —
+    //  وهذا يُبخّر نقداً حقيقياً: كاشير في درجه ٣٠٠ ريالاً يُحذف حسابه ⇒
+    //  المبلغ يختفي من «نقد الكاشيرين» ومن ملخّص الخزينة، ولا عجز يُلاحَق.
+    //  وأسوأ من ذلك أنه كان يمسح **محلياً فقط** بلا `deleteRecord`، فالمستند
+    //  يبقى في السحابة ويعود عند أول لقطة ⇒ الشاشة تتأرجح بين حالتين.
+    //  الآن: الوردية المغلقة الخالية من أي نقد تُحذف **صراحةً** من السحابة
+    //  أيضاً (§5.3)، وأي وردية مفتوحة أو فيها مبلغ تبقى موسومة `orphanUser`
+    //  حتى يسحب المدير عهدتها ويسوّيها.
+    // =====================================================================
+    const shiftHasMoney = (sh) => {
+      if (!sh) return false;
+      if (sh.isOpen === true && sh.status !== 'closed' && !sh.closedAt) return true;
+      return ['startCash', 'cashSales', 'cashIn', 'cashOut', 'actualCash', 'handoverAmount']
+        .some(f => Math.abs(Number(sh[f]) || 0) > 0.009);
+    };
     setUserShifts(prevShifts => {
       const nextShifts = { ...prevShifts };
-      delete nextShifts[userId];
-      if (userToDelete?.name) {
-        const delName = String(userToDelete.name).trim().toLowerCase();
-        Object.keys(nextShifts).forEach(k => {
-          if (String(nextShifts[k]?.cashierName || '').trim().toLowerCase() === delName || nextShifts[k]?.userId === userId) {
-            delete nextShifts[k];
-          }
+      const delName = String(userToDelete?.name || '').trim().toLowerCase();
+      let keptWithMoney = 0;
+      Object.keys(nextShifts).forEach(k => {
+        const sh = nextShifts[k];
+        const belongsToDeleted = k === userId || sh?.userId === userId
+          || (delName && String(sh?.cashierName || '').trim().toLowerCase() === delName);
+        if (!belongsToDeleted) return;
+        if (shiftHasMoney(sh)) { keptWithMoney++; return; }
+        delete nextShifts[k];
+        syncEngine.deleteRecord('user_shifts', k);   // حذف صريح من السحابة
+      });
+      if (keptWithMoney > 0) {
+        logAudit({
+          action: '⚠️ ورديات بقيت بعد حذف المستخدم',
+          target: userToDelete?.name || userId,
+          details: `${keptWithMoney} وردية تحمل نقداً أو ما زالت مفتوحة — لم تُحذف كي لا يختفي المال. تُسوّى من: الخزينة ← سحب عهدة الكاشير`,
+          severity: 'high'
         });
       }
       const cleaned = cleanUserShifts(nextShifts, remainingUsers);
@@ -6719,23 +7056,43 @@ export const AppProvider = ({ children }) => {
     };
   };
 
+  // =========================================================================
+  //  تبديل المستخدم لم يعد يبدّل — يفتح بوابة الرمز السري وحدها
+  // =========================================================================
+  //  ما كان يفعله: يضع `currentUser` على **أي** مستخدم يُمرَّر إليه، بلا رمز
+  //  سري وبلا أي فحص صلاحية، ثم يكتب قيد دخول ناجح في سجل المراقبة كأن
+  //  الشخص أثبت هويته. أي أن سطراً واحداً في طرفية المتصفّح —
+  //  `useApp().switchUser('user-2')` — كان يجعل أي كاشير **المدير العام**:
+  //  تصفير الحسابات، تعديل الأسعار، حذف الفواتير، قراءة سجل التدقيق.
+  //  وزرّه معروض في شاشة المستخدمين، فلا يحتاج الأمر طرفيةً أصلاً.
+  //  وأسوأ ما فيه أن السجل يكذب: التحقيق اللاحق يقرأ «دخل المدير الساعة
+  //  كذا» فلا يجد أثراً لتصعيد صلاحية وقع فعلاً.
+  //
+  //  الآن: لا تبديل هنا إطلاقاً. تُقفل الشاشة ويُطلب الرمز السري، فيمرّ
+  //  التبديل من `loginWithPin` وحدها — وهي المسار الذي يتحقّق من التجزئة
+  //  ومن `isActive` ويكتب قيد الدخول بحقّه. ⛔ لا يُكتب أي رمز في الكود.
+  // =========================================================================
   const switchUser = (userId) => {
     const target = users.find(u => u.id === userId);
-    if (target) {
-      // لا فاتورة معلقة عند تبديل المستخدم — التعليق موقوف في النظام
-      if (cart && cart.length > 0 && currentUser?.id !== target.id) {
-        clearCart();
-      }
-
-      setCurrentUser(target);
-      const nextShift = resolveTargetShift(target, activeShift, userShifts, shiftsHistory);
-      setActiveShift(nextShift);
-      localStorage.setItem('naif_pos_v3_active_shift', JSON.stringify(nextShift));
-      localStorage.setItem('naif_pos_v3_current_user', JSON.stringify(target));
-      recordLoginEvent(target, 'switch');
-      return true;
+    if (!target) return { success: false, needsPin: false, message: 'المستخدم غير موجود' };
+    if (target.isActive === false) {
+      return { success: false, needsPin: false, message: 'حساب هذا المستخدم معطَّل' };
     }
-    return false;
+    if (currentUser?.id === target.id) {
+      return { success: true, needsPin: false, message: 'أنت مسجّل بهذا الحساب أصلاً' };
+    }
+
+    // نمرّر هوية المقصود للشاشة كي تُركّز عليه — والرمز يبقى شرطاً لا يُتجاوز
+    setPinTargetUserId(target.id);
+    setIsLocked(true);
+    setIsInactivityLock(false);
+    logAudit({
+      action: 'طلب تبديل مستخدم (يحتاج رمزاً سرياً)',
+      target: target.name || target.id,
+      details: `من: ${currentUser?.name || 'غير معروف'} — لم يقع أي تبديل حتى يُدخَل رمز المستخدم المقصود`,
+      severity: 'high'
+    });
+    return { success: false, needsPin: true, message: `أدخل رمز (${target.name}) للدخول بحسابه` };
   };
 
   // تسجيل حركة دخول جديدة ومواصفات الجهاز في سجل المراقبة والأمان
@@ -6944,6 +7301,7 @@ export const AppProvider = ({ children }) => {
       localStorage.setItem('naif_pos_v3_active_shift', JSON.stringify(nextShift));
       setIsLocked(false);
       setIsInactivityLock(false);
+      setPinTargetUserId(null);
       localStorage.setItem('naif_pos_v3_current_user', JSON.stringify(foundUser));
       recordLoginEvent(foundUser, 'pin');
       return { success: true, user: foundUser };
@@ -6983,6 +7341,7 @@ export const AppProvider = ({ children }) => {
       localStorage.setItem('naif_pos_v3_active_shift', JSON.stringify(nextShift));
       setIsLocked(false);
       setIsInactivityLock(false);
+      setPinTargetUserId(null);
       localStorage.setItem('naif_pos_v3_current_user', JSON.stringify(foundUser));
       recordLoginEvent(foundUser, 'nfc');
 
@@ -7065,10 +7424,31 @@ export const AppProvider = ({ children }) => {
     setIsInactivityLock(false);
   };
 
-  const logout = () => {
+  // =========================================================================
+  //  الخروج الحقيقي — ينهي جلسة Firebase أيضاً لا شاشة القفل وحدها
+  // =========================================================================
+  //  ما كان يفعله: يمسح `currentUser` ويرفع شاشة القفل، **ولا يستدعي
+  //  `signOut(auth)` إطلاقاً**. فجلسة Firebase تبقى حيّة بكامل صلاحياتها،
+  //  ومن يفتح أدوات المطوّر على الجهاز «المُقفل» يقرأ ويكتب في Firestore
+  //  مباشرةً: حذف فواتير، تعديل أسعار، قراءة سجل التدقيق والنسخ الاحتياطية —
+  //  لأن القواعد تعرف الهوية من **بريد Firebase** لا من الرمز السري.
+  //  وكانت السلة تبقى كما هي، فيرث الموظف التالي أصنافاً لم يضعها.
+  //  الآن: جلسة Firebase تُنهى، والسلة تُفرَّغ، والشاشة تُقفل.
+  //  (من أراد قفل الشاشة مع إبقاء الجلسة فله `lockScreen` أدناه — وهي
+  //   المقصودة عند الانصراف اللحظي، لا عند تسليم الجهاز.)
+  // =========================================================================
+  const logout = async () => {
+    try {
+      await signOut(auth);
+    } catch (err) {
+      // فشل قطع الجلسة لا يجوز أن يُبقي الشاشة مفتوحة — نُكمل القفل ونُبلغ
+      console.error('تعذر تسجيل الخروج من Firebase:', err);
+    }
+    try { clearCart(); } catch (e) { /* سلة فارغة أصلاً */ }
     setCurrentUser(null);
     setIsLocked(true);
     setIsInactivityLock(false);
+    setPinTargetUserId(null);
     localStorage.removeItem('naif_pos_v3_current_user');
     const guestShift = { id: 'shift-guest', isOpen: false, status: 'closed', userId: null };
     setActiveShift(guestShift);
@@ -7657,6 +8037,8 @@ export const AppProvider = ({ children }) => {
       updateUser,
       deleteUser,
       switchUser,
+      // المستخدم الذي طُلب الدخول بحسابه من شاشة المستخدمين — تلميح للواجهة فقط
+      pinTargetUserId,
       hasPermission,
       loginWithPin,
       needsPinSetup,
@@ -7683,6 +8065,7 @@ export const AppProvider = ({ children }) => {
       confirmShiftCashHandover,
       fundCashierDrawer,
       withdrawCashierDrawer,
+      getCashierHeldCash,
       cancelPendingFloat,
       getPendingFloatsFor,
       getPendingFloatTotalFor,

@@ -29,7 +29,8 @@ export const CurrentShiftDrawerTab = ({ treasurySummary, isAdmin, setActiveTab }
     users,
     userShifts,
     hasPermission,
-    confirmDialog
+    confirmDialog,
+    getCashierHeldCash
   } = useApp();
 
   const [isMovementModalOpen, setIsMovementModalOpen] = useState(false);
@@ -52,20 +53,30 @@ export const CurrentShiftDrawerTab = ({ treasurySummary, isAdmin, setActiveTab }
   );
 
   const [isOpenShiftModal, setIsOpenShiftModal] = useState(false);
-  const [openingCashInput, setOpeningCashInput] = useState(() => {
-    if (lastUserClosedShift && typeof lastUserClosedShift.actualCash === 'number') {
-      return String(lastUserClosedShift.actualCash);
-    }
-    return String(storeInfo.defaultStartCash ?? storeInfo.fixedOpeningCash ?? '500');
-  });
+
+  // الرصيد المرحَّل = ما بذمّة الكاشير **الآن** (وردية جارية + معلّق لم يُسحب)،
+  // لا ما انتهت به آخر وردية مغلقة. انظر getCashierHeldCash في AppContext.
+  const heldCash = React.useMemo(
+    () => (typeof getCashierHeldCash === 'function' ? getCashierHeldCash(currentUser?.id) : 0),
+    [getCashierHeldCash, currentUser?.id, shiftsHistory, userShifts, invoices]
+  );
+  const rolloverCash = heldCash > 0.005
+    ? heldCash
+    : (lastUserClosedShift && typeof lastUserClosedShift.actualCash === 'number'
+        ? lastUserClosedShift.actualCash
+        : null);
+
+  const [openingCashInput, setOpeningCashInput] = useState(() =>
+    String(storeInfo.defaultStartCash ?? storeInfo.fixedOpeningCash ?? '500')
+  );
 
   React.useEffect(() => {
-    if (lastUserClosedShift && typeof lastUserClosedShift.actualCash === 'number') {
-      setOpeningCashInput(String(lastUserClosedShift.actualCash));
-    } else {
-      setOpeningCashInput(String(storeInfo.defaultStartCash ?? storeInfo.fixedOpeningCash ?? '500'));
-    }
-  }, [storeInfo.defaultStartCash, storeInfo.fixedOpeningCash, lastUserClosedShift]);
+    setOpeningCashInput(
+      rolloverCash !== null
+        ? String(rolloverCash)
+        : String(storeInfo.defaultStartCash ?? storeInfo.fixedOpeningCash ?? '500')
+    );
+  }, [storeInfo.defaultStartCash, storeInfo.fixedOpeningCash, rolloverCash]);
 
   // حالات سطر التصفية تحت عرض الحسابات
   const [filterPeriod, setFilterPeriod] = useState('current_shift'); // 'current_shift' | 'today' | 'yesterday' | 'last7days' | 'last30days' | 'custom'
@@ -617,14 +628,15 @@ export const CurrentShiftDrawerTab = ({ treasurySummary, isAdmin, setActiveTab }
       alert('⛔ ليس لديك صلاحية لفتح وردية جديدة!');
       return;
     }
-    if (myOpenShift) {
-      await openNewShift(0);
-      return;
-    }
-    const defaultRollover = (lastUserClosedShift && typeof lastUserClosedShift.actualCash === 'number')
-      ? String(lastUserClosedShift.actualCash)
-      : String(storeInfo?.defaultStartCash ?? storeInfo?.fixedOpeningCash ?? 0);
-    setOpeningCashInput(defaultRollover);
+    // كان المسار يفتح الوردية برصيد **صفر بلا أن يسأل** حين توجد وردية مفتوحة.
+    // فمن يختار «إغلاق السابقة وفتح جديدة» كانت وردية الجديدة تبدأ بصفر،
+    // والنقد الذي بيده يختفي من رصيدها الافتتاحي. النافذة تُعرض في كل
+    // المسارات الآن، معبّأة بما بذمّته فعلاً.
+    setOpeningCashInput(
+      rolloverCash !== null
+        ? String(rolloverCash)
+        : String(storeInfo?.defaultStartCash ?? storeInfo?.fixedOpeningCash ?? 0)
+    );
     setIsOpenShiftModal(true);
   };
 

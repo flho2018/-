@@ -25,7 +25,8 @@ export const ShiftHeaderModal = ({ isOpen, onClose }) => {
     drawerTransactions,
     hasPermission,
     userShifts,
-    users
+    users,
+    getCashierHeldCash
   } = useApp();
 
   const [isUserSwitchOpen, setIsUserSwitchOpen] = useState(false);
@@ -138,23 +139,31 @@ export const ShiftHeaderModal = ({ isOpen, onClose }) => {
     [shiftsHistory, currentUser]
   );
 
-  // حالة فتح الوردية مع الترحيل التلقائي الذكي للرصيد المتبقي
-  const [openingCashInput, setOpeningCashInput] = useState(() => {
-    if (lastUserClosedShift && typeof lastUserClosedShift.actualCash === 'number') {
-      return String(lastUserClosedShift.actualCash);
-    }
-    return String(storeInfo?.defaultStartCash ?? storeInfo?.fixedOpeningCash ?? '0');
-  });
+  // الرصيد المرحَّل = ما بذمّة الكاشير **الآن** (وردية جارية + معلّق لم يُسحب)،
+  // لا ما انتهت به آخر وردية مغلقة. انظر getCashierHeldCash في AppContext.
+  const heldCash = React.useMemo(
+    () => (typeof getCashierHeldCash === 'function' ? getCashierHeldCash(currentUser?.id) : 0),
+    [getCashierHeldCash, currentUser?.id, shiftsHistory, userShifts, invoices, isShiftOpen]
+  );
+  const rolloverCash = heldCash > 0.005
+    ? heldCash
+    : (lastUserClosedShift && typeof lastUserClosedShift.actualCash === 'number'
+        ? lastUserClosedShift.actualCash
+        : null);
+
+  const [openingCashInput, setOpeningCashInput] = useState(() =>
+    String(storeInfo?.defaultStartCash ?? storeInfo?.fixedOpeningCash ?? '0')
+  );
 
   React.useEffect(() => {
     if (!isShiftOpen) {
-      if (lastUserClosedShift && typeof lastUserClosedShift.actualCash === 'number') {
-        setOpeningCashInput(String(lastUserClosedShift.actualCash));
-      } else {
-        setOpeningCashInput(String(storeInfo?.defaultStartCash ?? storeInfo?.fixedOpeningCash ?? '0'));
-      }
+      setOpeningCashInput(
+        rolloverCash !== null
+          ? String(rolloverCash)
+          : String(storeInfo?.defaultStartCash ?? storeInfo?.fixedOpeningCash ?? '0')
+      );
     }
-  }, [storeInfo?.defaultStartCash, storeInfo?.fixedOpeningCash, isShiftOpen, lastUserClosedShift]);
+  }, [storeInfo?.defaultStartCash, storeInfo?.fixedOpeningCash, isShiftOpen, rolloverCash]);
 
   // تصفير وتنظيف حالة التقرير القديم تلقائياً بمجرد إغلاق النافذة أو تبديل الكاشير
   React.useEffect(() => {
@@ -935,13 +944,15 @@ export const ShiftHeaderModal = ({ isOpen, onClose }) => {
                   >
                     بدء بدون عهدة (0)
                   </button>
-                  {lastUserClosedShift && typeof lastUserClosedShift.actualCash === 'number' && (
+                  {/* «النقد الذي بذمّتك» لا «آخر وردية مغلقة»: الثاني يتجاهل
+                      ما بِيعَ نقداً في الوردية الجارية بعد ذلك الإغلاق */}
+                  {rolloverCash !== null && (
                     <button
                       type="button"
-                      onClick={() => setOpeningCashInput(String(lastUserClosedShift.actualCash))}
+                      onClick={() => setOpeningCashInput(String(rolloverCash))}
                       className="px-2.5 py-1 rounded-lg bg-emerald-100 hover:bg-emerald-200 text-emerald-800 text-[10px] font-bold transition font-mono"
                     >
-                      ترحيل السابق ({lastUserClosedShift.actualCash} ر.س)
+                      الذي بذمّتك ({rolloverCash} ر.س)
                     </button>
                   )}
                   <button

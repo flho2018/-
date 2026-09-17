@@ -195,6 +195,34 @@ for (const [file, label] of CONSUMERS) {
   t('رصيد كل كاشير مفصول باسمه (cashierBalances)',
     /const cashierBalances\s*=/.test(ctx) ? 1 : 0, 1);
 
+  // الإغلاق الآلي كان يُغلق بـ `startCash` لأن الوردية المفتوحة بلا `actualCash`
+  // ⇒ وردية نقدها ٢٧٥ تُغلق على ١٠٠ فتتبخّر ١٧٥ ويُسجَّل عجز وهمي بها
+  t('الإغلاق الآلي يستعمل النقد المحسوب من السجلات',
+    /closeShift\(\s*computeOpenShiftCash\(existingShift\)/.test(ctx) ? 1 : 0, 1);
+  t('الإغلاق الآلي لم يعد يسقط على startCash',
+    /closeShift\(existingShift\.actualCash \?\? existingShift\.startCash/.test(ctx) ? 0 : 1, 1);
+  t('يوجد مصدر واحد لما يحمله الكاشير الآن',
+    /const getCashierHeldCash\s*=/.test(ctx) ? 1 : 0, 1);
+
+  // نوافذ فتح الوردية الثلاث تسأل «كم بذمّته الآن؟» لا «بكم أُغلقت آخر وردية؟»
+  const DIALOGS = [
+    ['src/components/pos/PosRegister.jsx', 'شاشة الكاشير'],
+    ['src/components/cashier/ShiftHeaderModal.jsx', 'نافذة رأس الوردية'],
+    ['src/components/cashier/tabs/CurrentShiftDrawerTab.jsx', 'تبويب الدرج'],
+  ];
+  for (const [file, label] of DIALOGS) {
+    const s = fs.readFileSync(file, 'utf8');
+    t(`${label}: يعبّئ الرصيد من getCashierHeldCash`,
+      /getCashierHeldCash\(currentUser\?\.id\)/.test(s) ? 1 : 0, 1);
+    t(`${label}: لا يعبّئ من actualCash مباشرةً`,
+      /setOpeningCashInput\(String\(lastUserClosedShift\.actualCash\)\)/.test(s) ? 0 : 1, 1);
+  }
+  {
+    const dt = fs.readFileSync('src/components/cashier/tabs/CurrentShiftDrawerTab.jsx', 'utf8');
+    t('تبويب الدرج لا يفتح وردية بصفر بلا سؤال',
+      /await openNewShift\(0\)/.test(dt) ? 0 : 1, 1);
+  }
+
   const mt = fs.readFileSync('src/components/cashier/tabs/ManagerTreasuryTab.jsx', 'utf8');
   t('الخزينة تعرض رصيد كل كاشير',
     /treasurySummary\.cashierBalances/.test(mt) ? 1 : 0, 1);
