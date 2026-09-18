@@ -21,7 +21,7 @@ import {
   // البديل داخل هذا الملف: `isRefundChargedToShift`.
   filterInvoicesByShift, filterDrawerTxByShift,
   classifyInvoicePayments, computeExpectedCash, sumDrawerCashIn, sumDrawerCashOut,
-  findLastClosedShift, effectivePendingHandover, isHandoverPending
+  findLastClosedShift, effectivePendingHandover, isHandoverPending, isShiftRecordOpen
 } from '../utils/useShiftMetrics';
 import { playGentleNotificationSound } from '../utils/soundHelper';
 import { hashPin, verifyPin, hashNfcCard, verifyNfcCard, isHashedPin, validatePinStrength } from '../utils/security';
@@ -862,12 +862,9 @@ export const AppProvider = ({ children }) => {
 
     // 1. فحص وردية المستخدم الحالي في userShifts ومطابقة معرف المستخدم حصراً
     const existingShift = userShifts && userShifts[currentUserId];
-    const isExistingShiftOpen = existingShift && 
+    const isExistingShiftOpen = existingShift &&
       existingShift.userId === currentUserId &&
-      existingShift.isOpen === true && 
-      existingShift.status !== 'closed' &&
-      !existingShift.closedAt && 
-      !historyList.some(h => h && h.id === existingShift.id && (h.status === 'closed' || h.closedAt || h.isOpen === false));
+      isShiftRecordOpen(existingShift, historyList);
 
     if (isExistingShiftOpen) {
       if (
@@ -889,12 +886,9 @@ export const AppProvider = ({ children }) => {
     }
 
     // 2. إذا كانت الوردية الحالية في activeShift تخص هذا المستخدم حصراً ومفتوحة بالفعل
-    const isActiveOpen = activeShift && 
+    const isActiveOpen = activeShift &&
       activeShift.userId === currentUserId &&
-      activeShift.isOpen === true &&
-      activeShift.status !== 'closed' &&
-      !activeShift.closedAt && 
-      !historyList.some(h => h && h.id === activeShift.id && (h.status === 'closed' || h.closedAt || h.isOpen === false));
+      isShiftRecordOpen(activeShift, historyList);
 
     if (isActiveOpen) {
       return;
@@ -1791,10 +1785,7 @@ export const AppProvider = ({ children }) => {
   const addToCart = async (product, qty = 1) => {
     if (!product || !product.id) return false;
     // حماية صارمة: منع إضافة منتجات للسلة نهائياً بدون وردية مفتوحة للمستخدم الحالي
-    const isShiftValidAndOpen = (sh) => {
-      if (!sh || sh.isOpen !== true || sh.status === 'closed' || sh.closedAt) return false;
-      return true;
-    };
+    const isShiftValidAndOpen = (sh) => isShiftRecordOpen(sh, shiftsHistory);
     const currentUid = currentUser?.id;
     const isCurrentShiftValid = (sh) => {
       if (!isShiftValidAndOpen(sh)) return false;
@@ -2159,10 +2150,7 @@ export const AppProvider = ({ children }) => {
     if (cart.length === 0) return null;
 
     // حماية صارمة: منع البيع نهائياً إذا لم تكن هناك وردية مفتوحة للمستخدم الحالي
-    const isShiftValidAndOpen = (sh) => {
-      if (!sh || sh.isOpen !== true || sh.status === 'closed' || sh.closedAt) return false;
-      return true;
-    };
+    const isShiftValidAndOpen = (sh) => isShiftRecordOpen(sh, shiftsHistory);
     const currentUid = currentUser?.id;
     const isCurrentShiftValid = (sh) => {
       if (!isShiftValidAndOpen(sh)) return false;
@@ -2552,10 +2540,7 @@ export const AppProvider = ({ children }) => {
       return false;
     }
     // حماية صارمة: منع الاسترجاع نهائياً إذا لم تكن هناك وردية مفتوحة للمستخدم الحالي
-    const isShiftValidAndOpen = (sh) => {
-      if (!sh || sh.isOpen !== true || sh.status === 'closed' || sh.closedAt) return false;
-      return true;
-    };
+    const isShiftValidAndOpen = (sh) => isShiftRecordOpen(sh, shiftsHistory);
     const currentUid = currentUser?.id;
     const isCurrentShiftValid = (sh) => {
       if (!isShiftValidAndOpen(sh)) return false;
@@ -4933,11 +4918,7 @@ export const AppProvider = ({ children }) => {
     const currentUserId = currentUser?.id || 'admin';
 
     // فحص صارم ومحكم لمنع فتح الوردية مرتين: هل لدى هذا المستخدم وردية مفتوحة بالفعل محلياً أو سحابياً؟
-    const isShiftValidAndOpen = (sh) => {
-      if (!sh || sh.isOpen !== true || sh.status === 'closed' || sh.closedAt) return false;
-      const inHist = (shiftsHistory || []).some(h => h && h.id === sh.id && (h.status === 'closed' || h.closedAt || h.isOpen === false));
-      return !inHist;
-    };
+    const isShiftValidAndOpen = (sh) => isShiftRecordOpen(sh, shiftsHistory);
 
     // وردية موجودة في السجل التاريخي كمغلقة = مغلقة مهما قالت النسخة
     // المحلية. بدون هذا الفحص تبقى وردية "عالقة مفتوحة" تمنع الكاشير
@@ -7066,10 +7047,7 @@ export const AppProvider = ({ children }) => {
       return { id: 'shift-guest', isOpen: false, status: 'closed', cashierName: 'غير محدد' };
     }
     const history = historyList || [];
-    const isShiftValidAndOpen = (sh) => {
-      if (!sh || sh.isOpen !== true || sh.status === 'closed' || sh.closedAt) return false;
-      return !history.some(h => h && h.id === sh.id && (h.status === 'closed' || h.closedAt || h.isOpen === false));
-    };
+    const isShiftValidAndOpen = (sh) => isShiftRecordOpen(sh, history);
 
     // 1. فحص هل لهذا المستخدم تحديداً وردية مفتوحة خاصة به في userShifts؟
     const targetShift = currentUserShifts?.[user.id];

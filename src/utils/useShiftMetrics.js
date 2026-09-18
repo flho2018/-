@@ -182,6 +182,27 @@ export const findLastClosedShift = (shiftsHistory, currentUser) => {
 };
 
 // =========================================================================
+//  هل هذه الوردية مفتوحة للبيع الآن؟
+// =========================================================================
+//  مستند `user_shifts` لكل مستخدم يُكتب بـ merge (§5.3). ففتح وردية جديدة
+//  بلا حقل `closedAt` يُبقي ختم الإغلاق السابق في السحابة، وتعود اللقطة
+//  فتلصق `closedAt` على الوردية الجديدة. الشرط `!closedAt` كان يعتبرها
+//  مغلقة رغم `isOpen: true` و`openedAt` الأحدث — فيُرفض البيع وتُفتح
+//  وردية فوق وردية. الختم الأقدم من وقت الفتح بقايا دمج، لا إغلاق.
+export const isShiftRecordOpen = (sh, historyList = []) => {
+  if (!sh || sh.isOpen !== true || sh.status === 'closed') return false;
+  const openedTs = sh.openedAt ? new Date(sh.openedAt).getTime() : 0;
+  const closedTs = sh.closedAt ? new Date(sh.closedAt).getTime() : 0;
+  if (Number.isFinite(closedTs) && closedTs > 0 && !(Number.isFinite(openedTs) && openedTs > closedTs)) {
+    return false;
+  }
+  if (sh.id && (historyList || []).some(h => h && h.id === sh.id && (h.status === 'closed' || h.closedAt || h.isOpen === false))) {
+    return false;
+  }
+  return true;
+};
+
+// =========================================================================
 //  العهدة المعلّقة فعلاً على وردية مغلقة — المصدر الوحيد
 // =========================================================================
 //  وردية تُغلق تبقى `handoverStatus: 'pending'` بكامل نقدها بانتظار أن
